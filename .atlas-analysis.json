@@ -1,0 +1,126 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Rustic Core",
+  "projectDescription": "A fast, encrypted, and deduplicated backup library for Rust that powers rustic-rs.",
+  "theme": "aspen",
+  "primaryColor": "#9c2f06",
+  "lightColor": "#1c79a5",
+  "darkColor": "#a68779",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/repository",
+              "concepts/snapshots",
+              "concepts/encryption",
+              "concepts/deduplication",
+              "concepts/backends"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/backup",
+              "guides/restore",
+              "guides/repository-management",
+              "guides/configuration",
+              "guides/backends-setup"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/init-repository",
+              "examples/create-snapshot",
+              "examples/restore-snapshot",
+              "examples/check-repository",
+              "examples/prune-repository"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core API",
+            "pages": [
+              "api/repository",
+              "api/repository-options",
+              "api/credentials"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "api/backup",
+              "api/restore",
+              "api/check",
+              "api/prune",
+              "api/snapshots"
+            ]
+          },
+          {
+            "group": "Data Types",
+            "pages": [
+              "api/repofile",
+              "api/blob",
+              "api/index",
+              "api/crypto",
+              "api/chunker"
+            ]
+          },
+          {
+            "group": "Backends",
+            "pages": [
+              "api/backend-trait",
+              "api/backend-options",
+              "api/supported-backends"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Fast encrypted and deduplicated backups",
+    "Compatible with restic repository format",
+    "Multiple backend support (local, S3, REST, rclone, and more)",
+    "Content-defined chunking for efficient deduplication",
+    "AES-256 encryption with Poly1305 authentication",
+    "Repository verification and maintenance operations",
+    "Flexible snapshot management",
+    "Virtual file system support"
+  ],
+  "publicApiSurface": [
+    "Repository",
+    "RepositoryOptions",
+    "Credentials",
+    "BackupOptions",
+    "RestoreOptions",
+    "CheckOptions",
+    "PruneOptions",
+    "SnapshotOptions",
+    "KeyOptions",
+    "ConfigOptions",
+    "BackendOptions",
+    "PathList",
+    "LocalDestination",
+    "Node",
+    "Snapshot",
+    "IndexedBackend",
+    "repofile::*"
+  ]
+}
