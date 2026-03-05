@@ -1,0 +1,187 @@
+---
+title: "Restore"
+description: "Restore data from snapshots to a local destination"
+---
+
+The restore operation recovers files and directories from snapshots in the repository.
+
+## restore_repository()
+
+Restores files from a snapshot to a local destination.
+
+```rust
+pub fn restore_repository<S: IndexedTree>(
+    file_infos: RestorePlan,
+    repo: &Repository<S>,
+    opts: RestoreOptions,
+    node_streamer: impl Iterator<Item = RusticResult<(PathBuf, Node)>>,
+    dest: &LocalDestination,
+) -> RusticResult<()>
+```
+
+### Parameters
+
+- `file_infos`: The restore plan containing information about what to restore
+- `repo`: The repository to restore from
+- `opts`: Restore options
+- `node_streamer`: Iterator providing file/directory nodes
+- `dest`: Destination directory for restored files
+
+### Errors
+
+- If the restore operation fails
+
+## RestoreOptions
+
+Configuration options for the restore operation.
+
+<ParamField path="delete" type="bool" default={false}>
+  Remove all files/dirs in destination which are not contained in snapshot.
+  
+  <Warning>Use with care! Consider using with `--dry-run` first.</Warning>
+</ParamField>
+
+<ParamField path="numeric_id" type="bool" default={false}>
+  Use numeric IDs instead of user/group names when restoring uid/gid.
+</ParamField>
+
+<ParamField path="no_ownership" type="bool" default={false}>
+  Don't restore ownership (user/group). Conflicts with `numeric_id`.
+</ParamField>
+
+<ParamField path="verify_existing" type="bool" default={false}>
+  Always read and verify existing files. Don't trust correct modification time and file size.
+</ParamField>
+
+## RestorePlan
+
+Contains information about what will be restored.
+
+```rust
+pub struct RestorePlan {
+    pub restore_size: u64,
+    pub matched_size: u64,
+    pub stats: RestoreStats,
+}
+```
+
+### Fields
+
+<ParamField path="restore_size" type="u64">
+  Total size of data to restore.
+</ParamField>
+
+<ParamField path="matched_size" type="u64">
+  Total size of matched content (already exists, no restore needed).
+</ParamField>
+
+<ParamField path="stats" type="RestoreStats">
+  Detailed statistics about the restore operation.
+</ParamField>
+
+### Methods
+
+#### to_packs()
+
+Get a list of all pack files needed to perform the restore.
+
+```rust
+pub fn to_packs(&self) -> Vec<PackId>
+```
+
+Useful for warming up pack files before doing the actual restore.
+
+## RestoreStats
+
+Statistics about files and directories in a restore operation.
+
+```rust
+pub struct RestoreStats {
+    pub files: FileDirStats,
+    pub dirs: FileDirStats,
+}
+```
+
+## FileDirStats
+
+Statistics for files or directories.
+
+<ParamField path="restore" type="u64">
+  Number of items to restore.
+</ParamField>
+
+<ParamField path="unchanged" type="u64">
+  Number of items which are unchanged (determined by date, but not verified).
+</ParamField>
+
+<ParamField path="verified" type="u64">
+  Number of items which are verified and unchanged.
+</ParamField>
+
+<ParamField path="modify" type="u64">
+  Number of items which are modified.
+</ParamField>
+
+<ParamField path="additional" type="u64">
+  Number of additional entries in destination.
+</ParamField>
+
+## LocalDestination
+
+Represents a local filesystem destination for restore operations.
+
+Provides methods for:
+- Creating directories
+- Writing file contents
+- Setting file metadata (permissions, ownership, timestamps)
+- Reading existing files for verification
+
+## Example
+
+```rust
+use rustic_core::{
+    LocalDestination,
+    RestoreOptions,
+    Repository,
+};
+
+// Configure restore options
+let opts = RestoreOptions {
+    delete: false,
+    numeric_id: false,
+    no_ownership: false,
+    verify_existing: false,
+};
+
+// Set up destination
+let dest = LocalDestination::new("/restore/target")?;
+
+// Get snapshot to restore
+let snapshot_id = "abc123";
+let snapshot = repo.get_snapshot(snapshot_id)?;
+
+// Create restore plan
+let node_streamer = repo.get_node_streamer(snapshot.tree)?;
+let restore_plan = collect_and_prepare(
+    &repo,
+    opts,
+    node_streamer.clone(),
+    &dest,
+    false, // dry_run
+)?;
+
+println!("Restore size: {} bytes", restore_plan.restore_size);
+println!("Files to restore: {}", restore_plan.stats.files.restore);
+
+// Perform restore
+restore_repository(restore_plan, &repo, opts, node_streamer, &dest)?;
+println!("Restore completed!");
+```
+
+## Notes
+
+- Restore uses the modification time and file size to detect unchanged files
+- Use `verify_existing` to always verify file contents (slower but more thorough)
+- The `delete` option removes files from destination that aren't in the snapshot
+- Restore operations are optimized to skip files that haven't changed
+- Multiple reader threads (up to 20) are used for parallel restore

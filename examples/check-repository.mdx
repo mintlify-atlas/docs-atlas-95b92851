@@ -1,0 +1,240 @@
+---
+title: Check Repository Integrity
+description: Learn how to verify the integrity of a rustic_core repository
+---
+
+This example shows how to check the integrity of your backup repository. Regular checks help ensure your backups are valid and can be restored when needed.
+
+## Complete Example
+
+```rust
+use rustic_backend::BackendOptions;
+use rustic_core::{CheckOptions, Credentials, Repository, RepositoryOptions};
+use simplelog::{Config, LevelFilter, SimpleLogger};
+use std::error::Error;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    // Display info logs
+    let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+
+    // Initialize Backends
+    let backends = BackendOptions::default()
+        .repository("/tmp/repo")
+        .to_backends()?;
+
+    // Open repository
+    let repo_opts = RepositoryOptions::default();
+    let credentials = Credentials::password("test");
+    let repo = Repository::new(&repo_opts, &backends)?.open(&credentials)?;
+
+    // Check repository with standard options but omitting cache checks
+    let opts = CheckOptions::default().trust_cache(true);
+    repo.check(opts)?;
+    Ok(())
+}
+```
+
+## Step-by-Step Explanation
+
+### 1. Set up logging
+
+```rust
+let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+```
+
+Enable logging to see detailed progress during the check operation, including which components are being verified and any errors found.
+
+### 2. Configure the backend
+
+```rust
+let backends = BackendOptions::default()
+    .repository("/tmp/repo")
+    .to_backends()?;
+```
+
+Connect to the repository backend where your backup data is stored.
+
+### 3. Open the repository
+
+```rust
+let repo_opts = RepositoryOptions::default();
+let credentials = Credentials::password("test");
+let repo = Repository::new(&repo_opts, &backends)?.open(&credentials)?;
+```
+
+Open the repository with authentication. Note that we don't need to index the repository for checking - we just need to open it.
+
+### 4. Configure check options
+
+```rust
+let opts = CheckOptions::default().trust_cache(true);
+```
+
+Configure what to check:
+- **trust_cache(true)**: Skip verifying the cache (faster, recommended for regular checks)
+- Use default settings for other options (checks snapshots, index, and pack files)
+
+### 5. Run the check
+
+```rust
+repo.check(opts)?;
+```
+
+Execute the integrity check. This will:
+- Verify all snapshots are valid and readable
+- Check that index files are consistent
+- Validate pack files contain the expected data
+- Ensure all referenced data exists
+- Optionally verify data checksums
+
+If any errors are found, they will be returned. A successful check means your repository is healthy.
+
+## Expected Output
+
+During a check operation, you'll see progress information:
+
+```
+INFO - opening repository at /tmp/repo
+INFO - checking repository integrity
+INFO - reading repository config
+INFO - checking snapshots...
+INFO - checked 15 snapshots
+INFO - checking index...
+INFO - checked 234 index entries
+INFO - checking pack files...
+INFO - checked 45 pack files (2.3 GB)
+INFO - checking data integrity...
+INFO - repository check completed successfully
+INFO - no errors found
+```
+
+If errors are found, you'll see detailed information about what's wrong:
+
+```
+ERROR - snapshot a1b2c3d4 references missing tree object
+ERROR - pack file 5e6f7g8h has checksum mismatch
+WARN - orphaned pack file found: 9i0j1k2l
+```
+
+## Check Levels
+
+You can configure different levels of checking based on your needs:
+
+### Quick Check (Fast)
+
+```rust
+let opts = CheckOptions::default()
+    .trust_cache(true)      // Skip cache verification
+    .read_data(false);      // Don't read actual data
+repo.check(opts)?;
+```
+
+This verifies the repository structure without reading all data. Good for frequent automated checks.
+
+### Standard Check (Recommended)
+
+```rust
+let opts = CheckOptions::default()
+    .trust_cache(true);     // Skip cache but verify data
+repo.check(opts)?;
+```
+
+Verifies repository structure and data integrity. Recommended for regular manual checks.
+
+### Full Check (Thorough)
+
+```rust
+let opts = CheckOptions::default()
+    .trust_cache(false)     // Verify cache too
+    .read_data(true);       // Read and verify all data
+repo.check(opts)?;
+```
+
+Comprehensive verification of everything including cache. Use periodically or after suspected corruption.
+
+### Check Specific Subsets
+
+```rust
+// Check only recent snapshots
+let opts = CheckOptions::default()
+    .read_data_subset("10%");  // Sample 10% of data packs
+
+// Check with specific snapshot IDs
+let opts = CheckOptions::default()
+    .snapshot_ids(vec!["a1b2c3d4", "e5f6g7h8"]);
+```
+
+## Error Recovery
+
+If the check finds errors, you can:
+
+1. **Run prune** to remove orphaned data:
+   ```rust
+   let prune_opts = PruneOptions::default();
+   let plan = repo.prune_plan(&prune_opts)?;
+   plan.do_prune(&repo, &prune_opts)?;
+   ```
+
+2. **Rebuild index** if index corruption is detected:
+   ```rust
+   repo.rebuild_index(&RebuildIndexOptions::default())?;
+   ```
+
+3. **Restore from a good snapshot** if data corruption is found
+
+## Best Practices
+
+<Tip>
+  Run a quick check after each backup and a full check weekly or monthly. This helps catch issues early before they affect multiple snapshots.
+</Tip>
+
+### Recommended Check Schedule
+
+- **After every backup**: Quick check with `trust_cache(true)` and `read_data(false)`
+- **Weekly**: Standard check with `trust_cache(true)`
+- **Monthly**: Full check with `trust_cache(false)` and `read_data(true)`
+- **After repository migration**: Full check to ensure data integrity
+
+### Handling Check Failures
+
+```rust
+match repo.check(opts) {
+    Ok(_) => {
+        println!("Repository check passed");
+    }
+    Err(e) => {
+        eprintln!("Repository check failed: {}", e);
+        // Log error for investigation
+        // Consider running repair operations
+        // Alert administrators
+    }
+}
+```
+
+## Performance Considerations
+
+Check operations can be I/O intensive:
+
+- **Quick checks** typically take seconds to minutes
+- **Standard checks** may take minutes to hours depending on repository size
+- **Full checks** can take hours for large repositories
+
+For large repositories:
+
+```rust
+let opts = CheckOptions::default()
+    .trust_cache(true)
+    .read_data_subset("5%");  // Sample data instead of reading everything
+```
+
+## Related API Documentation
+
+- [CheckOptions](/api/check) - Configure integrity checking
+- [Repository::check()](/api/check) - Check operation
+- [Repository::rebuild_index()](/api/repository) - Rebuild corrupted index
+
+## Next Steps
+
+- [Prune repository](/examples/prune-repository) to optimize storage and remove orphaned data
+- Learn about [repository maintenance](/guides/repository-management) best practices
+- Set up [automated checks](/guides/repository-management#maintenance-schedule) in your backup workflow

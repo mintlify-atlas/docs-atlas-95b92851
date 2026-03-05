@@ -1,0 +1,355 @@
+---
+title: Backend Options
+description: Configuration options for initializing and connecting to rustic backends
+---
+
+The `BackendOptions` struct provides a unified way to configure backend connections in rustic. It handles repository paths, hot/cold storage setups, and backend-specific options.
+
+## BackendOptions Struct
+
+```rust
+pub struct BackendOptions {
+    pub repository: Option<String>,
+    pub repo_hot: Option<String>,
+    pub options: BTreeMap<String, String>,
+    pub options_hot: BTreeMap<String, String>,
+    pub options_cold: BTreeMap<String, String>,
+}
+```
+
+### Fields
+
+#### repository
+
+The main repository location. This is required to create a backend.
+
+```rust
+use rustic_backend::BackendOptions;
+
+let opts = BackendOptions {
+    repository: Some("local:/path/to/repo".to_string()),
+    ..Default::default()
+};
+```
+
+**Environment Variable**: `RUSTIC_REPOSITORY`
+
+**CLI Alias**: `-r`, `--repo`, `--repository`
+
+#### repo_hot
+
+Optional hot storage location for a hot/cold repository setup.
+
+```rust
+let opts = BackendOptions {
+    repository: Some("s3:bucket/cold-storage".to_string()),
+    repo_hot: Some("local:/fast/hot-storage".to_string()),
+    ..Default::default()
+};
+```
+
+**Environment Variable**: `RUSTIC_REPO_HOT`
+
+#### options
+
+Backend-specific options applied to both hot and cold repositories.
+
+```rust
+use std::collections::BTreeMap;
+
+let mut options = BTreeMap::new();
+options.insert("retry".to_string(), "5".to_string());
+
+let opts = BackendOptions {
+    repository: Some("rest:https://example.com/repo".to_string()),
+    options,
+    ..Default::default()
+};
+```
+
+#### options_hot
+
+Backend-specific options applied only to the hot repository.
+
+#### options_cold
+
+Backend-specific options applied only to the cold repository.
+
+## Creating Backends
+
+### Basic Usage
+
+```rust
+use rustic_backend::BackendOptions;
+use rustic_core::RepositoryBackends;
+
+let opts = BackendOptions {
+    repository: Some("local:/path/to/repo".to_string()),
+    ..Default::default()
+};
+
+let backends: RepositoryBackends = opts.to_backends()?;
+```
+
+### With Options
+
+```rust
+use std::collections::BTreeMap;
+
+let mut options = BTreeMap::new();
+options.insert("timeout".to_string(), "30s".to_string());
+options.insert("retry".to_string(), "10".to_string());
+
+let opts = BackendOptions {
+    repository: Some("rest:https://backup.example.com".to_string()),
+    options,
+    ..Default::default()
+};
+
+let backends = opts.to_backends()?;
+```
+
+### Using Builder Pattern
+
+```rust
+use rustic_backend::BackendOptions;
+
+let opts = BackendOptions::default()
+    .repository("/path/to/repo")
+    .repo_hot("/path/to/hot");
+
+let backends = opts.to_backends()?;
+```
+
+## Common Backend Options
+
+Different backend types support different configuration options.
+
+### Local Backend
+
+```rust
+let mut options = BTreeMap::new();
+options.insert(
+    "post-create-command".to_string(),
+    "rsync %file backup-server:/backup/".to_string()
+);
+options.insert(
+    "post-delete-command".to_string(),
+    "notify-admin %id deleted".to_string()
+);
+
+let opts = BackendOptions {
+    repository: Some("local:/repo".to_string()),
+    options,
+    ..Default::default()
+};
+```
+
+**Available placeholders**:
+- `%file` - Full path to the file
+- `%type` - File type directory name
+- `%id` - File ID
+
+### REST Backend
+
+```rust
+let mut options = BTreeMap::new();
+options.insert("retry".to_string(), "5".to_string());
+options.insert("timeout".to_string(), "10m".to_string());
+options.insert("cacert".to_string(), "/path/to/ca.pem".to_string());
+options.insert("tls-client-cert".to_string(), "/path/to/client.pem".to_string());
+
+let opts = BackendOptions {
+    repository: Some("rest:https://backup.example.com/repo".to_string()),
+    options,
+    ..Default::default()
+};
+```
+
+**Options**:
+- `retry` - Number of retries (`"false"`, `"off"`, `"default"`, or number)
+- `timeout` - Request timeout (duration string, e.g., `"10m"`, `"30s"`)
+- `cacert` - Path to CA certificate file
+- `tls-client-cert` - Path to TLS client certificate
+
+### Rclone Backend
+
+```rust
+let mut options = BTreeMap::new();
+options.insert(
+    "rclone-command".to_string(),
+    "rclone serve restic --addr localhost:8080".to_string()
+);
+options.insert("use-password".to_string(), "true".to_string());
+options.insert("rest-url".to_string(), "http://localhost:8080".to_string());
+
+let opts = BackendOptions {
+    repository: Some("rclone:remote:path".to_string()),
+    options,
+    ..Default::default()
+};
+```
+
+**Options**:
+- `rclone-command` - Custom rclone command (default: `"rclone serve restic --addr localhost:0"`)
+- `use-password` - Enable authentication (default: `true`)
+- `rest-url` - Explicit REST URL (skips auto-detection)
+
+Plus all REST backend options (passed through to underlying REST backend).
+
+### OpenDAL Backend
+
+```rust
+let mut options = BTreeMap::new();
+options.insert("retry".to_string(), "5".to_string());
+options.insert("connections".to_string(), "10".to_string());
+options.insert("throttle".to_string(), "10MB,50MB".to_string());
+
+// Provider-specific options (e.g., for S3)
+options.insert("access_key_id".to_string(), "AKIAIOSFODNN7EXAMPLE".to_string());
+options.insert("secret_access_key".to_string(), "wJalrXUtnFEMI/K7MDENG".to_string());
+options.insert("bucket".to_string(), "my-backup-bucket".to_string());
+options.insert("region".to_string(), "us-west-2".to_string());
+
+let opts = BackendOptions {
+    repository: Some("opendal:s3".to_string()),
+    options,
+    ..Default::default()
+};
+```
+
+**General Options**:
+- `retry` - Number of retries (`"false"`, `"off"`, `"default"`, or number)
+- `connections` - Maximum concurrent connections
+- `throttle` - Bandwidth throttling (format: `"<bandwidth>,<burst>"`, e.g., `"10MB,50MB"`)
+
+**Provider-specific options**: See the [OpenDAL documentation](https://opendal.apache.org/) for options specific to each storage provider (S3, GCS, Azure Blob, etc.).
+
+## Hot/Cold Repository Setup
+
+A hot/cold setup uses two backends: a fast "hot" storage for frequently accessed data and slower "cold" storage for bulk data.
+
+```rust
+let mut hot_options = BTreeMap::new();
+hot_options.insert("connections".to_string(), "20".to_string());
+
+let mut cold_options = BTreeMap::new();
+cold_options.insert("connections".to_string(), "5".to_string());
+
+let opts = BackendOptions {
+    repository: Some("s3:my-bucket/cold".to_string()),
+    repo_hot: Some("local:/fast/ssd/hot".to_string()),
+    options_hot: hot_options,
+    options_cold: cold_options,
+    ..Default::default()
+};
+
+let backends = opts.to_backends()?;
+```
+
+## Repository Location Formats
+
+The repository location string determines which backend to use:
+
+### Local
+```rust
+// Absolute path (Unix)
+"local:/path/to/repo"
+"/path/to/repo"  // Implicit local backend
+
+// Absolute path (Windows)
+"local:C:\\path\\to\\repo"
+"C:\\path\\to\\repo"  // Implicit local backend
+```
+
+### REST
+```rust
+"rest:http://localhost:8000/repo"
+"rest:https://backup.example.com/repo"
+"rest:https://user:pass@example.com/repo"
+```
+
+### Rclone
+```rust
+"rclone:remote:path/to/repo"
+"rclone:gdrive:backup/rustic-repo"
+"rclone:s3:bucket/repo"
+```
+
+### OpenDAL
+```rust
+"opendal:s3"  // S3 with bucket in options
+"opendal:gcs" // Google Cloud Storage
+"opendal:azblob" // Azure Blob Storage
+"opendal:fs" // Filesystem (similar to local)
+```
+
+## Configuration File Usage
+
+BackendOptions supports serialization for use in configuration files:
+
+```toml
+# config.toml
+[backend]
+repository = "rest:https://backup.example.com/repo"
+repo-hot = "local:/fast/hot-storage"
+
+[backend.options]
+retry = "5"
+timeout = "10m"
+
+[backend.options-hot]
+connections = "20"
+
+[backend.options-cold]
+connections = "5"
+```
+
+```rust
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Config {
+    backend: BackendOptions,
+}
+
+let config: Config = toml::from_str(&config_str)?;
+let backends = config.backend.to_backends()?;
+```
+
+## Error Handling
+
+The `to_backends()` method returns an error if:
+
+1. No repository is specified:
+```rust
+let opts = BackendOptions::default();
+let result = opts.to_backends();
+// Error: "No repository given"
+```
+
+2. Invalid backend type:
+```rust
+let opts = BackendOptions {
+    repository: Some("invalid:backend".to_string()),
+    ..Default::default()
+};
+let result = opts.to_backends();
+// Error: "The backend type 'invalid' is not supported"
+```
+
+3. Backend initialization fails:
+```rust
+let opts = BackendOptions {
+    repository: Some("rest:invalid-url".to_string()),
+    ..Default::default()
+};
+let result = opts.to_backends();
+// Error: Backend-specific initialization error
+```
+
+## Related Types
+
+- [Backend Traits](/api/backend-trait) - Core backend interface traits
+- [Supported Backends](/api/supported-backends) - All available backend implementations
+- [SupportedBackend](/api/supported-backends#supportedbackend-enum) - Backend type enumeration

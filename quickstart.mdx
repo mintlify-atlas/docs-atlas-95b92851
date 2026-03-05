@@ -1,80 +1,463 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Create your first backup with rustic_core in minutes
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
+This guide will walk you through creating a complete backup workflow:
 
-### Step 1: Set up your local environment
+1. Initialize a new repository
+2. Create a backup snapshot
+3. List snapshots
+4. Restore data
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+By the end, you'll have a working backup system!
+
+## Prerequisites
+
+Make sure you have rustic_core installed:
+
+```toml
+[dependencies]
+rustic_core = "0"
+rustic_backend = "0"
+simplelog = "0.12"  # For logging output
+```
+
+<Info>
+See the [Installation guide](/installation) if you haven't set up rustic_core yet.
+</Info>
+
+## Complete Example
+
+Here's a complete working example that demonstrates the full backup lifecycle:
+
+```rust
+use rustic_backend::BackendOptions;
+use rustic_core::{
+    BackupOptions, CheckOptions, ConfigOptions, KeyOptions, 
+    LocalDestination, LsOptions, PathList, Repository, 
+    RepositoryOptions, RestoreOptions, SnapshotOptions
+};
+use simplelog::{Config, LevelFilter, SimpleLogger};
+use std::error::Error;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    // Enable info-level logging to see what's happening
+    let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+
+    // Step 1: Initialize repository
+    init_repository()?;
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    // Step 2: Create a backup
+    create_backup()?;
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    // Step 3: Restore from backup
+    restore_backup()?;
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    // Step 4: Check repository integrity
+    check_repository()?;
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    println!("\nBackup workflow completed successfully!");
+    Ok(())
+}
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+fn init_repository() -> Result<(), Box<dyn Error>> {
+    println!("=== Initializing Repository ===")
+    
+    // Configure backend (local filesystem in this example)
+    let backends = BackendOptions::default()
+        .repository("/tmp/my-backup-repo")
+        .to_backends()?;
+    
+    // Set repository password
+    let repo_opts = RepositoryOptions::default()
+        .password("my-secure-password");
+    
+    // Configure encryption key
+    let key_opts = KeyOptions::default();
+    
+    // Configure repository settings
+    let config_opts = ConfigOptions::default();
+    
+    // Initialize the repository
+    let _repo = Repository::new(&repo_opts, &backends)?
+        .init(&key_opts, &config_opts)?;
+    
+    println!("Repository initialized at /tmp/my-backup-repo\n");
+    Ok(())
+}
 
-### Step 3: Go live
+fn create_backup() -> Result<(), Box<dyn Error>> {
+    println!("=== Creating Backup ===")
+    
+    // Open the repository
+    let backends = BackendOptions::default()
+        .repository("/tmp/my-backup-repo")
+        .to_backends()?;
+    
+    let repo_opts = RepositoryOptions::default()
+        .password("my-secure-password");
+    
+    // Open and prepare for backup operations
+    let repo = Repository::new(&repo_opts, &backends)?
+        .open()?
+        .to_indexed_ids()?;
+    
+    // Define what to back up
+    let source = PathList::from_string(".")?.sanitize()?;
+    
+    // Configure backup options
+    let backup_opts = BackupOptions::default();
+    
+    // Create snapshot with tags
+    let snap = SnapshotOptions::default()
+        .add_tags("quickstart,example")?
+        .to_snapshot()?;
+    
+    // Perform the backup
+    let snap = repo.backup(&backup_opts, &source, snap)?;
+    
+    println!("Snapshot created successfully!");
+    println!("Snapshot ID: {}", snap.id);
+    println!("Paths: {:?}\n", snap.paths);
+    
+    Ok(())
+}
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+fn restore_backup() -> Result<(), Box<dyn Error>> {
+    println!("=== Restoring Backup ===")
+    
+    // Open repository
+    let backends = BackendOptions::default()
+        .repository("/tmp/my-backup-repo")
+        .to_backends()?;
+    
+    let repo_opts = RepositoryOptions::default()
+        .password("my-secure-password");
+    
+    let repo = Repository::new(&repo_opts, &backends)?
+        .open()?
+        .to_indexed()?;
+    
+    // Get the latest snapshot
+    let node = repo.node_from_snapshot_path("latest", |_| true)?;
+    
+    // List contents
+    let streamer_opts = LsOptions::default();
+    let ls = repo.ls(&node, &streamer_opts)?;
+    
+    // Configure restore destination
+    let destination = "./restore/";
+    let create = true;
+    let dest = LocalDestination::new(destination, create, !node.is_dir())?;
+    
+    // Prepare restore
+    let opts = RestoreOptions::default();
+    let dry_run = false;
+    let restore_infos = repo.prepare_restore(&opts, ls.clone(), &dest, dry_run)?;
+    
+    // Execute restore
+    repo.restore(restore_infos, &opts, ls, &dest)?;
+    
+    println!("Restore completed to ./restore/\n");
+    Ok(())
+}
 
-## Next steps
+fn check_repository() -> Result<(), Box<dyn Error>> {
+    println!("=== Checking Repository ===")
+    
+    let backends = BackendOptions::default()
+        .repository("/tmp/my-backup-repo")
+        .to_backends()?;
+    
+    let repo_opts = RepositoryOptions::default()
+        .password("my-secure-password");
+    
+    let repo = Repository::new(&repo_opts, &backends)?.open()?;
+    
+    // Check repository integrity
+    let opts = CheckOptions::default().trust_cache(true);
+    repo.check(opts)?;
+    
+    println!("Repository check passed!\n");
+    Ok(())
+}
+```
 
-Now that you have your docs running, explore these key features:
+## Step-by-Step Breakdown
+
+Let's break down each step in detail:
+
+<Steps>
+  <Step title="Initialize the Repository">
+    The first step is creating a new backup repository:
+
+    ```rust
+    use rustic_backend::BackendOptions;
+    use rustic_core::{ConfigOptions, KeyOptions, Repository, RepositoryOptions};
+
+    // Configure where to store backups
+    let backends = BackendOptions::default()
+        .repository("/tmp/repo")
+        .to_backends()?;
+
+    // Set repository password
+    let repo_opts = RepositoryOptions::default().password("test");
+    
+    // Initialize
+    let key_opts = KeyOptions::default();
+    let config_opts = ConfigOptions::default();
+    let _repo = Repository::new(&repo_opts, &backends)?
+        .init(&key_opts, &config_opts)?;
+    ```
+
+    <Note>
+      The repository password encrypts all data. **Keep it safe** - there's no way to recover your backups without it!
+    </Note>
+
+    **What happens**: This creates the repository structure with encryption keys and configuration files.
+  </Step>
+
+  <Step title="Open the Repository">
+    Before performing operations, open the repository:
+
+    ```rust
+    let repo = Repository::new(&repo_opts, &backends)?
+        .open()?
+        .to_indexed_ids()?;
+    ```
+
+    The `to_indexed_ids()` method prepares the repository for backup operations by loading the index of existing data blobs.
+
+    <Info>
+      Different repository states enable different operations:
+      - `.open()` - Basic operations (list snapshots, check)
+      - `.to_indexed_ids()` - Backup operations
+      - `.to_indexed()` - Restore operations
+      - `.to_indexed_full()` - Prune and maintenance
+    </Info>
+  </Step>
+
+  <Step title="Create a Backup">
+    Now create your first snapshot:
+
+    ```rust
+    use rustic_core::{BackupOptions, PathList, SnapshotOptions};
+
+    // Define what to backup
+    let source = PathList::from_string(".")?.sanitize()?;
+    
+    // Configure backup
+    let backup_opts = BackupOptions::default();
+    
+    // Create snapshot with metadata
+    let snap = SnapshotOptions::default()
+        .add_tags("tag1,tag2")?
+        .to_snapshot()?;
+    
+    // Execute backup
+    let snap = repo.backup(&backup_opts, &source, snap)?;
+    println!("Created snapshot: {}", snap.id);
+    ```
+
+    **What happens**: rustic_core:
+    1. Scans the source directory
+    2. Chunks files using content-defined chunking
+    3. Deduplicates against existing data
+    4. Encrypts and compresses new chunks
+    5. Writes to the repository
+    6. Creates a snapshot pointing to the data
+
+    <Tip>
+      Subsequent backups are incremental - only changed data is stored!
+    </Tip>
+  </Step>
+
+  <Step title="List Snapshots">
+    View all snapshots in the repository:
+
+    ```rust
+    let repo = Repository::new(&repo_opts, &backends)?.open()?;
+    let snapshots = repo.get_all_snapshots()?;
+    
+    for snap in snapshots {
+        println!("Snapshot {}", snap.id);
+        println!("  Time: {}", snap.time);
+        println!("  Paths: {:?}", snap.paths);
+        println!("  Tags: {:?}", snap.tags);
+    }
+    ```
+  </Step>
+
+  <Step title="Restore Data">
+    Restore from a snapshot:
+
+    ```rust
+    use rustic_core::{LocalDestination, LsOptions, RestoreOptions};
+
+    let repo = Repository::new(&repo_opts, &backends)?
+        .open()?
+        .to_indexed()?;
+    
+    // Get latest snapshot
+    let node = repo.node_from_snapshot_path("latest", |_| true)?;
+    
+    // List contents
+    let ls = repo.ls(&node, &LsOptions::default())?;
+    
+    // Setup destination
+    let dest = LocalDestination::new("./restore/", true, !node.is_dir())?;
+    
+    // Restore
+    let opts = RestoreOptions::default();
+    let restore_infos = repo.prepare_restore(&opts, ls.clone(), &dest, false)?;
+    repo.restore(restore_infos, &opts, ls, &dest)?;
+    ```
+
+    <Info>
+      Instead of "latest", you can use:
+      - A specific snapshot ID
+      - "latest" for the most recent snapshot
+      - A tag like "tag:production"
+    </Info>
+  </Step>
+</Steps>
+
+## Backend Options
+
+rustic_core supports various storage backends:
+
+<CodeGroup>
+
+```rust Local Filesystem
+let backends = BackendOptions::default()
+    .repository("/path/to/repo")
+    .to_backends()?;
+```
+
+```rust With Hot/Cold Storage
+// Hot storage for metadata, cold for data
+let backends = BackendOptions::default()
+    .repository("/cold/storage/repo")
+    .repo_hot("/fast/ssd/repo")
+    .to_backends()?;
+```
+
+```rust REST Server
+let backends = BackendOptions::default()
+    .repository("rest:https://backup.example.com/repo")
+    .to_backends()?;
+```
+
+</CodeGroup>
+
+## Password Management
+
+<Warning>
+  Never hardcode passwords in production code! Use environment variables or secure credential storage.
+</Warning>
+
+Better password handling:
+
+```rust
+use std::env;
+
+// From environment variable
+let password = env::var("RUSTIC_PASSWORD")
+    .expect("RUSTIC_PASSWORD must be set");
+
+let repo_opts = RepositoryOptions::default()
+    .password(&password);
+```
+
+Or use a password file:
+
+```rust
+let repo_opts = RepositoryOptions::default()
+    .password_file("/secure/path/to/password.txt");
+```
+
+## Common Operations
+
+### Filtering Snapshots
+
+```rust
+let all_snapshots = repo.get_all_snapshots()?;
+
+// Filter by tag
+let production_snaps: Vec<_> = all_snapshots
+    .iter()
+    .filter(|s| s.tags.contains(&"production".to_string()))
+    .collect();
+```
+
+### Checking Repository Health
+
+```rust
+use rustic_core::CheckOptions;
+
+let repo = Repository::new(&repo_opts, &backends)?.open()?;
+
+let opts = CheckOptions::default()
+    .trust_cache(true)  // Skip cache verification for speed
+    .read_data(true);   // Verify data pack integrity
+
+repo.check(opts)?;
+```
+
+### Backup with Progress
+
+```rust
+use rustic_core::{BackupOptions, ProgressBars};
+
+let progress = ProgressBars::new();
+let backup_opts = BackupOptions::default();
+
+let snap = repo.backup(&backup_opts, &source, snap)?;
+```
+
+## Error Handling
+
+Use proper error handling in production:
+
+```rust
+use rustic_core::{RusticError, RusticResult};
+
+fn backup_with_retry() -> RusticResult<()> {
+    match repo.backup(&backup_opts, &source, snap) {
+        Ok(snap) => {
+            println!("Backup successful: {}", snap.id);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Backup failed: {}", e);
+            Err(e)
+        }
+    }
+}
+```
+
+## Next Steps
+
+Now that you have a working backup system, explore more features:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Repository Management" icon="database" href="/concepts/repository">
+    Learn about repository states and configuration
+  </Card>
+  <Card title="Backup Operations" icon="cloud-arrow-up" href="/guides/backup">
+    Advanced backup options and strategies
+  </Card>
+  <Card title="Restore Operations" icon="cloud-arrow-down" href="/guides/restore">
+    Selective restore and recovery options
+  </Card>
+  <Card title="Maintenance" icon="wrench" href="/guides/repository-management">
+    Prune, check, and optimize your repository
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+<Tip>
+  Check out the [examples directory](https://github.com/rustic-rs/rustic_core/tree/main/examples) in the repository for more complete examples!
+</Tip>

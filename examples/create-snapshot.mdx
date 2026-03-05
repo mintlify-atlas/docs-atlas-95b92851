@@ -1,0 +1,196 @@
+---
+title: Create a Snapshot
+description: Learn how to create a backup snapshot using rustic_core
+---
+
+This example shows how to create a backup snapshot of files and directories. A snapshot is a point-in-time backup that captures the state of your data with deduplication and encryption.
+
+## Complete Example
+
+```rust
+use rustic_backend::BackendOptions;
+use rustic_core::{
+    BackupOptions, Credentials, PathList, Repository, RepositoryOptions, SnapshotOptions,
+};
+use simplelog::{Config, LevelFilter, SimpleLogger};
+use std::error::Error;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    // Display info logs
+    let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+
+    // Initialize Backends
+    let backends = BackendOptions::default()
+        .repository("/tmp/repo")
+        .repo_hot("/tmp/repo2")
+        .to_backends()?;
+
+    // Open repository
+    let repo_opts = RepositoryOptions::default();
+    let credentials = Credentials::password("test");
+    let repo = Repository::new(&repo_opts, &backends)?
+        .open(&credentials)?
+        .to_indexed_ids()?;
+
+    let backup_opts = BackupOptions::default();
+    let source = PathList::from_string(".")?.sanitize()?;
+    let snap = SnapshotOptions::default()
+        .add_tags("tag1,tag2")?
+        .to_snapshot()?;
+
+    // Create snapshot
+    let snap = repo.backup(&backup_opts, &source, snap)?;
+
+    println!("successfully created snapshot:\n{snap:#?}");
+    Ok(())
+}
+```
+
+## Step-by-Step Explanation
+
+### 1. Set up logging
+
+```rust
+let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+```
+
+Enable logging to track backup progress, including files processed, data transferred, and deduplication statistics.
+
+### 2. Configure backends with hot storage
+
+```rust
+let backends = BackendOptions::default()
+    .repository("/tmp/repo")
+    .repo_hot("/tmp/repo2")
+    .to_backends()?;
+```
+
+Set up the main repository and an optional hot storage location. Hot storage provides faster access for recent data:
+- **repository**: Main backend for all data
+- **repo_hot**: Optional fast storage for recent snapshots and metadata
+
+### 3. Open the repository
+
+```rust
+let repo_opts = RepositoryOptions::default();
+let credentials = Credentials::password("test");
+let repo = Repository::new(&repo_opts, &backends)?
+    .open(&credentials)?
+    .to_indexed_ids()?;
+```
+
+Open an existing repository using password authentication and build an index of existing data. The `to_indexed_ids()` call is crucial for efficient deduplication during backup.
+
+### 4. Configure backup options
+
+```rust
+let backup_opts = BackupOptions::default();
+let source = PathList::from_string(".")?.sanitize()?;
+```
+
+Set up backup configuration:
+- **backup_opts**: Controls behavior like compression, parallelism, and excludes
+- **source**: Paths to backup (in this case, current directory)
+- **sanitize()**: Normalizes and validates paths
+
+### 5. Set snapshot metadata
+
+```rust
+let snap = SnapshotOptions::default()
+    .add_tags("tag1,tag2")?
+    .to_snapshot()?;
+```
+
+Define snapshot metadata including:
+- **Tags**: Labels for organizing and filtering snapshots
+- **Hostname**: Automatically detected or can be set manually
+- **Time**: Defaults to current time
+
+### 6. Create the backup
+
+```rust
+let snap = repo.backup(&backup_opts, &source, snap)?;
+```
+
+Perform the actual backup operation. This will:
+- Scan the source files and directories
+- Detect changes since the last snapshot
+- Deduplicate data by splitting into chunks
+- Encrypt and compress chunks
+- Upload new data to the backend
+- Create the snapshot metadata
+
+### 7. Display results
+
+```rust
+println!("successfully created snapshot:\n{snap:#?}");
+```
+
+Show the created snapshot details including ID, timestamp, statistics, and metadata.
+
+## Expected Output
+
+During backup, you'll see progress information:
+
+```
+INFO - starting backup of .
+INFO - scanning files...
+INFO - processed 1,234 files, 45.2 MB
+INFO - new data: 12.3 MB (after deduplication and compression)
+INFO - snapshot created successfully
+
+successfully created snapshot:
+Snapshot {
+    id: "a1b2c3d4",
+    time: "2024-03-15T10:30:00Z",
+    hostname: "mycomputer",
+    paths: ["."],
+    tags: ["tag1", "tag2"],
+    summary: SnapshotSummary {
+        files_new: 100,
+        files_changed: 50,
+        files_unmodified: 1084,
+        data_added: 12345678,
+        ...
+    }
+}
+```
+
+The summary shows:
+- Files categorized as new, changed, or unmodified
+- Amount of new data added to the repository
+- Total files and directories processed
+- Deduplication ratio and compression statistics
+
+## Advanced Configuration
+
+### Exclude patterns
+
+```rust
+let backup_opts = BackupOptions::default()
+    .glob("!*.tmp")?
+    .glob("!node_modules/")?
+    .glob("!target/")?;
+```
+
+### Custom parent snapshot
+
+```rust
+let snap = SnapshotOptions::default()
+    .add_tags("tag1,tag2")?
+    .set_parent("previous_snapshot_id")
+    .to_snapshot()?;
+```
+
+## Related API Documentation
+
+- [BackupOptions](/api/backup) - Configure backup behavior
+- [SnapshotOptions](/api/snapshot-options) - Set snapshot metadata
+- [PathList](/api/backup) - Specify backup sources
+- [Repository::backup()](/api/backup) - Backup operation
+
+## Next Steps
+
+- [Restore a snapshot](/examples/restore-snapshot) to recover backed up data
+- [List snapshots](/api/snapshots) to browse backups
+- [Check repository](/examples/check-repository) to verify backup integrity

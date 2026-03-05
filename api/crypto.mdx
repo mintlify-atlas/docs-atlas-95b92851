@@ -1,0 +1,323 @@
+---
+title: Cryptography
+description: Encryption, decryption, and key derivation operations
+---
+
+The crypto module provides cryptographic operations for securing repository data. All blob data and metadata is encrypted using authenticated encryption (AEAD).
+
+## Overview
+
+Rustic uses:
+- **AES-256-CTR** for encryption
+- **Poly1305-AES** for authentication (MAC)
+- **SHA-256** for hashing
+- **scrypt** for key derivation from passwords
+
+This combination provides:
+- Confidentiality (encryption)
+- Integrity (MAC)
+- Content-addressed storage (hashing)
+
+## Key Structure
+
+The master key is 64 bytes, split into three parts:
+
+```rust
+use rustic_core::crypto::aespoly1305::Key;
+
+pub struct Key {
+    // [0..32]  - AES-256 encryption key
+    // [32..48] - Poly1305 'k' value
+    // [48..64] - Poly1305 'r' value
+}
+```
+
+### Creating Keys
+
+```rust
+// Generate random key
+let key = Key::new();
+
+// From components
+let key = Key::from_keys(
+    &encrypt_bytes, // 32 bytes
+    &k_bytes,       // 16 bytes
+    &r_bytes,       // 16 bytes  
+);
+
+// From slice
+let key = Key::from_slice(&key_bytes); // 64 bytes
+```
+
+## Encryption
+
+Encryption adds a random nonce and authentication tag:
+
+```rust
+use rustic_core::crypto::CryptoKey;
+
+let plaintext = b"secret data";
+let encrypted = key.encrypt_data(plaintext)?;
+
+// Format:
+// [0..16]   - Random nonce
+// [16..N]   - Encrypted data
+// [N..N+16] - Poly1305 MAC tag
+```
+
+**Encrypted data structure**:
+```
+┌─────────────────┬─────────────────┬──────────────┐
+│  Nonce (16B)    │  Ciphertext     │  Tag (16B)   │
+│  Random IV      │  AES-CTR        │  Poly1305    │
+└─────────────────┴─────────────────┴──────────────┘
+```
+
+**Example**:
+```rust
+use rustic_core::crypto::aespoly1305::Key;
+use rustic_core::crypto::CryptoKey;
+
+// Encrypt
+let data = b"Hello, World!";
+let encrypted = key.encrypt_data(data)?;
+
+assert_eq!(encrypted.len(), 16 + data.len() + 16);
+```
+
+## Decryption
+
+Decryption verifies the MAC before returning plaintext:
+
+```rust
+// Decrypt and verify
+let decrypted = key.decrypt_data(&encrypted)?;
+assert_eq!(decrypted, plaintext);
+
+// MAC verification failure
+let corrupted = &mut encrypted.clone();
+corrupted[20] ^= 0xFF; // Flip a bit
+
+let result = key.decrypt_data(corrupted);
+assert!(result.is_err()); // MAC check fails
+```
+
+**Security**: The MAC is checked before any data is returned, preventing tampering.
+
+## Hashing
+
+SHA-256 hashing for content-addressed storage:
+
+```rust
+use rustic_core::crypto::hasher::hash;
+use rustic_core::id::Id;
+
+// Hash data to get blob ID
+let data = b"file contents";
+let id: Id = hash(data);
+
+println!("Blob ID: {}", id); // 32-byte hash as hex
+```
+
+### Streaming Hash
+
+For large data:
+
+```rust
+use rustic_core::crypto::hasher::hash_reader;
+use std::fs::File;
+
+// Hash file without loading into memory
+let file = File::open("large-file.bin")?;
+let id = hash_reader(file)?;
+```
+
+## Key Derivation
+
+Password-based key derivation using scrypt:
+
+```rust
+use rustic_core::repofile::keyfile::KeyFile;
+
+// Key file contains scrypt parameters
+pub struct KeyFile {
+    pub kdf: String,      // "scrypt"
+    pub n: u32,           // CPU/memory cost (2^n)
+    pub r: u32,           // Block size
+    pub p: u32,           // Parallelization
+    pub salt: Vec<u8>,    // Random salt
+    pub data: Vec<u8>,    // Encrypted master key
+}
+```
+
+### Deriving Key from Password
+
+```rust
+let password = "my-secure-password";
+
+// 1. Derive key from password using scrypt
+let derived_key = key_file.kdf_key(&password)?;
+
+// 2. Decrypt master key
+let master_key = key_file.key_from_data(&derived_key)?;
+
+// Or combined:
+let master_key = key_file.key_from_password(&password)?;
+```
+
+**scrypt parameters** (recommended):
+- N = 2^15 = 32768 (log_n = 15)
+- r = 8
+- p = 1
+- 64-byte output
+
+### Generating Key Files
+
+```rust
+use rustic_core::repofile::keyfile::KeyFile;
+
+let master_key = Key::new();
+let password = "secure-password";
+
+let key_file = KeyFile::generate(
+    master_key,
+    &password,
+    Some("hostname".to_string()),
+    Some("username".to_string()),
+    true, // include creation time
+)?;
+
+// Save to backend
+backend.save_file(&key_file)?;
+```
+
+## MasterKey Structure
+
+The master key is encrypted and stored:
+
+```rust
+pub struct MasterKey {
+    pub mac: Mac,           // Poly1305 parameters
+    pub encrypt: Vec<u8>,   // AES key
+}
+
+pub struct Mac {
+    pub k: Vec<u8>,  // 16 bytes
+    pub r: Vec<u8>,  // 16 bytes
+}
+```
+
+**Creation**:
+```rust
+use rustic_core::repofile::keyfile::MasterKey;
+
+let master_key = MasterKey::new(); // Random
+let key = master_key.key();        // Extract Key
+```
+
+## CryptoKey Trait
+
+Generic interface for encryption/decryption:
+
+```rust
+pub trait CryptoKey {
+    fn encrypt_data(&self, data: &[u8]) -> RusticResult<Vec<u8>>;
+    fn decrypt_data(&self, data: &[u8]) -> RusticResult<Vec<u8>>;
+}
+```
+
+Implemented by `Key` for AES-256-CTR + Poly1305-AES.
+
+## Security Properties
+
+### Authenticated Encryption (AEAD)
+
+- **Confidentiality**: AES-256 in CTR mode
+- **Authenticity**: Poly1305-AES MAC
+- **Random IVs**: Each encryption uses fresh nonce
+
+### Content Addressing
+
+- **SHA-256 hashing**: 256-bit security
+- **Collision resistance**: Deduplication is safe
+- **Tamper detection**: Changed data = different ID
+
+### Key Derivation
+
+- **scrypt**: Memory-hard, GPU-resistant
+- **Random salt**: 64 bytes per key file
+- **Tunable cost**: Increase N for more security
+
+## Common Patterns
+
+### Encrypting Repository Data
+
+```rust
+use rustic_core::crypto::CryptoKey;
+
+// Serialize and encrypt
+let json = serde_json::to_vec(&snapshot)?;
+let encrypted = key.encrypt_data(&json)?;
+
+// Write to backend
+backend.write_bytes(FileType::Snapshot, &snapshot_id, encrypted)?;
+```
+
+### Decrypting Repository Data
+
+```rust
+// Read encrypted data
+let encrypted = backend.read_full(FileType::Snapshot, &snapshot_id)?;
+
+// Decrypt and deserialize
+let decrypted = key.decrypt_data(&encrypted)?;
+let snapshot: SnapshotFile = serde_json::from_slice(&decrypted)?;
+```
+
+### Content-Addressed Blobs
+
+```rust
+// Hash determines blob ID
+let blob_id = hash(&data).into();
+
+// Encrypt blob data
+let encrypted = key.encrypt_data(&data)?;
+
+// Store: ID is hash of plaintext, not ciphertext
+pack.add_blob(blob_id, encrypted)?;
+```
+
+## Error Handling
+
+Crypto errors indicate serious problems:
+
+```rust
+match key.decrypt_data(&data) {
+    Ok(plaintext) => Ok(plaintext),
+    Err(e) if e.is_code("C001") => {
+        // MAC verification failed - data corrupted or wrong key
+        Err("Decryption failed: wrong password or corrupted data")
+    }
+    Err(e) => Err(e),
+}
+```
+
+## Performance
+
+**Encryption overhead**:
+- 32 bytes per blob (nonce + tag)
+- ~10-50 MB/s on modern CPUs
+
+**Key derivation**:
+- scrypt: ~100ms per password check
+- Intentionally slow (prevents brute force)
+
+**Hashing**:
+- SHA-256: ~500 MB/s per core
+- Streaming for large files
+
+## See Also
+
+- [Repository Files](/api/repofile) - KeyFile format
+- [Blob Types](/api/blob) - Encrypted blob storage
+- [Repository](/api/repository) - Using crypto in operations

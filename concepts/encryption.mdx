@@ -1,0 +1,406 @@
+---
+title: Encryption
+description: Understanding rustic_core's encryption and security model
+---
+
+rustic_core uses **AES-256-CTR encryption with Poly1305 authentication** to ensure all data stored in repositories is secure and tamper-proof.
+
+## Encryption Overview
+
+<Note>
+Every piece of data and metadata in a repository is encrypted **before** it leaves your machine. The storage backend never sees unencrypted data.
+</Note>
+
+### Security Properties
+
+rustic_core's encryption provides:
+
+<CardGroup cols={2}>
+  <Card title="Confidentiality" icon="eye-slash">
+    All data encrypted with AES-256
+  </Card>
+  <Card title="Authenticity" icon="shield-check">
+    Poly1305 MAC prevents tampering
+  </Card>
+  <Card title="Integrity" icon="fingerprint">
+    Corrupted data is detected
+  </Card>
+  <Card title="Forward Secrecy" icon="lock">
+    Each blob uses unique nonce
+  </Card>
+</CardGroup>
+
+## Encryption Algorithm
+
+rustic_core uses the **AES256-CTR-Poly1305-AES** construction:
+
+<Steps>
+  <Step title="AES-256-CTR Encryption">
+    Data is encrypted using AES-256 in Counter (CTR) mode:
+    - **AES-256**: Strong symmetric encryption with 256-bit keys
+    - **CTR mode**: Stream cipher mode allowing random access
+    - **Performance**: Hardware-accelerated on modern CPUs
+  </Step>
+  
+  <Step title="Poly1305-AES Authentication">
+    Encrypted data is authenticated with Poly1305-AES MAC:
+    - **Poly1305**: Fast one-time authentication code
+    - **AES component**: Additional randomness for security
+    - **Result**: 16-byte authentication tag
+  </Step>
+  
+  <Step title="Combined AEAD">
+    This combination provides Authenticated Encryption with Associated Data (AEAD):
+    - Encryption and authentication in one step
+    - Prevents both eavesdropping and tampering
+  </Step>
+</Steps>
+
+<Tip>
+This is the same encryption construction used by restic, ensuring full compatibility.
+</Tip>
+
+## The Master Key
+
+At the heart of repository encryption is a 64-byte **master key**:
+
+```rust
+pub struct Key(AeadKey);  // 64 bytes total
+
+// Key structure:
+// [0..32]   - AES-256 encryption key
+// [32..48]  - Poly1305-AES 'k' parameter  
+// [48..64]  - Poly1305-AES 'r' parameter
+```
+
+### Key Generation
+
+The master key is randomly generated using a cryptographically secure RNG:
+
+```rust
+use rustic_core::crypto::aespoly1305::Key;
+
+let key = Key::new();  // Generates random 64-byte key
+```
+
+### Key Components
+
+<Tabs>
+  <Tab title="Encryption Key (32 bytes)">
+    The first 32 bytes are used as the AES-256 encryption key.
+    
+    ```rust
+    let (encrypt, k, r) = key.to_keys();
+    // encrypt: [u8; 32] - AES-256 key
+    ```
+  </Tab>
+  
+  <Tab title="MAC Key 'k' (16 bytes)">
+    Bytes 32-48 are the 'k' parameter for Poly1305-AES.
+    
+    ```rust  
+    let (_, k, _) = key.to_keys();
+    // k: [u8; 16] - Poly1305 k parameter
+    ```
+  </Tab>
+  
+  <Tab title="MAC Key 'r' (16 bytes)">
+    Bytes 48-64 are the 'r' parameter for Poly1305-AES.
+    
+    ```rust
+    let (_, _, r) = key.to_keys();
+    // r: [u8; 16] - Poly1305 r parameter  
+    ```
+  </Tab>
+</Tabs>
+
+## Password-Based Key Derivation
+
+The master key is never stored directly. Instead, it's encrypted with a key derived from your password using **scrypt**.
+
+### Scrypt Parameters
+
+scrypt is a memory-hard key derivation function designed to resist brute-force attacks:
+
+```rust
+pub struct KeyFile {
+    pub kdf: String,        // "scrypt"
+    pub n: u32,            // CPU/memory cost (2^N)
+    pub r: u32,            // Block size  
+    pub p: u32,            // Parallelization
+    pub salt: Vec<u8>,     // Random 64-byte salt
+    pub data: Vec<u8>,     // Encrypted master key
+}
+```
+
+**Default parameters** (recommended):
+- **N**: 2^15 (32768) - Memory cost factor
+- **r**: 8 - Block size
+- **p**: 1 - Parallelization
+
+<Warning>
+scrypt with these parameters is intentionally slow (~100ms) to make password guessing expensive. Don't reduce these values!
+</Warning>
+
+### Key Derivation Process
+
+<Steps>
+  <Step title="Generate Salt">
+    Create a random 64-byte salt:
+    
+    ```rust
+    let mut salt = vec![0; 64];
+    rng().fill_bytes(&mut salt);
+    ```
+  </Step>
+  
+  <Step title="Derive Key">
+    Use scrypt to derive a 64-byte key from the password:
+    
+    ```rust
+    let params = Params::recommended();
+    let mut derived_key = [0; 64];
+    scrypt::scrypt(password, &salt, &params, &mut derived_key)?;
+    ```
+  </Step>
+  
+  <Step title="Encrypt Master Key">
+    Encrypt the master key with the derived key:
+    
+    ```rust
+    let kdf_key = Key::from_slice(&derived_key);
+    let encrypted_data = kdf_key.encrypt_data(&master_key_json)?;
+    ```
+  </Step>
+</Steps>
+
+### Multiple Passwords
+
+A repository can have **multiple key files**, each with a different password:
+
+```rust
+// Add a new password
+let new_key_id = repo.add_key("new-password", &key_opts)?;
+
+// Each key file contains the same master key, encrypted differently
+```
+
+<Tip>
+This allows:
+- Different passwords for different team members
+- Password rotation without re-encrypting data
+- Emergency access keys
+</Tip>
+
+## Encryption in Practice
+
+### Encrypting Data
+
+When saving data to the repository:
+
+```rust
+use rustic_core::crypto::CryptoKey;
+
+// The encryption process
+let encrypted = key.encrypt_data(&plaintext)?;
+
+// Encrypted format:
+// [0..16]   - Random nonce
+// [16..N-16] - Ciphertext  
+// [N-16..N] - Poly1305 MAC tag
+```
+
+Each encryption uses a **unique random nonce** (number used once):
+
+```rust
+let mut nonce = Nonce::default();  // 16 bytes
+rng().fill_bytes(&mut nonce);
+```
+
+### Decrypting Data
+
+When reading from the repository:
+
+```rust
+// Extract nonce and verify MAC
+let nonce = &encrypted[0..16];
+let ciphertext = &encrypted[16..];
+
+let plaintext = key.decrypt_data(&encrypted)?;
+// Returns error if MAC verification fails
+```
+
+<Warning>
+If the MAC check fails, the data has been corrupted or tampered with. rustic_core will reject it.
+</Warning>
+
+## What Gets Encrypted?
+
+rustic_core encrypts **everything** except key files themselves:
+
+<Tabs>
+  <Tab title="Encrypted">
+    ✅ **Always encrypted:**
+    - Config file
+    - Snapshot metadata  
+    - Tree blobs (directory structure)
+    - Data blobs (file contents)
+    - Index files
+    
+    ```rust
+    impl RepoFile for ConfigFile {
+        const ENCRYPTED: bool = true;
+    }
+    
+    impl RepoFile for SnapshotFile {
+        const ENCRYPTED: bool = true;
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Not Encrypted">
+    ❌ **Not encrypted:**
+    - Key files (contain encrypted master key)
+    - Lock files (temporary, contain repository ID)
+    
+    ```rust
+    impl RepoFile for KeyFile {
+        const ENCRYPTED: bool = false;
+    }
+    ```
+    
+    <Note>
+    Key files are not encrypted because they need to be readable before you have the master key. However, the master key inside is encrypted with your password.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Content-Addressed Encryption
+
+Encryption interacts with deduplication:
+
+1. **Plaintext chunking**: Files are split into chunks based on content
+2. **Deterministic IDs**: Each chunk's ID is the SHA-256 hash of plaintext
+3. **Encrypted storage**: Chunks are encrypted before storage
+4. **Deduplication preserved**: Identical chunks have same ID despite different ciphertexts
+
+```rust
+// Same content always generates same ID
+let chunk_id = hash(&plaintext_chunk);  // SHA-256
+
+// But different encrypted output (different nonces)
+let encrypted1 = key.encrypt_data(&chunk);
+let encrypted2 = key.encrypt_data(&chunk);
+assert_ne!(encrypted1, encrypted2);  // Different ciphertexts
+
+// Deduplication still works via content addressing
+assert_eq!(hash(&chunk), hash(&chunk));  // Same ID
+```
+
+## Security Considerations
+
+<AccordionGroup>
+  <Accordion title="Password Strength" icon="key">
+    Your password is the weakest link. Use a strong, unique password:
+    
+    - **Minimum**: 16+ characters
+    - **Recommended**: Random passphrase or password manager
+    - **Avoid**: Dictionary words, personal information
+    
+    scrypt makes brute-forcing expensive, but can't protect weak passwords.
+  </Accordion>
+  
+  <Accordion title="Key Storage" icon="vault">
+    The master key exists in memory during operations:
+    
+    ```rust
+    // Key is stored in repository state
+    pub(crate) fn dbe(&self) -> &DecryptBackend<Key> {
+        &self.status.open_status().dbe
+    }
+    ```
+    
+    **Security measures:**
+    - Keys are never written to disk unencrypted
+    - Use encrypted swap or disable swap for maximum security
+    - Clear sensitive data from memory when done
+  </Accordion>
+  
+  <Accordion title="Metadata Leakage" icon="info-circle">
+    While all data is encrypted, some metadata is visible:
+    
+    **Encrypted:**
+    - File names and paths
+    - File contents
+    - Directory structure
+    
+    **Visible:**
+    - Repository structure (config, keys, snapshots exist)
+    - Pack file sizes
+    - Number of snapshots
+    - Approximate repository size
+    
+    This is inherent to content-addressed storage.
+  </Accordion>
+</AccordionGroup>
+
+## Working with Keys
+
+### Opening with Password
+
+```rust
+use rustic_core::repository::Credentials;
+
+let credentials = Credentials::Password("my-password".to_string());
+let repo = repo.open(&credentials)?;
+```
+
+### Opening with Master Key
+
+For automation, you can use the master key directly:
+
+```rust
+use rustic_core::repofile::MasterKey;
+
+// Export master key once
+let master_key = repo.key();
+let master_key_json = serde_json::to_string(&master_key)?;
+
+// Later, open without password
+let credentials = Credentials::Masterkey(master_key);
+let repo = repo.open(&credentials)?;
+```
+
+<Warning>
+Master keys provide full access without password. Store them securely (e.g., encrypted secrets management).
+</Warning>
+
+### Key Management
+
+```rust
+// List keys
+let keys: Vec<KeyId> = repo.list()?;
+
+// Add new key
+let key_id = repo.add_key("new-password", &key_opts)?;
+
+// Delete key (cannot delete currently used key)
+repo.delete_key(&key_id)?;
+```
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Repository" icon="database" href="./repository">
+    Repository structure and lifecycle
+  </Card>
+  <Card title="Deduplication" icon="compress" href="./deduplication">
+    How encryption interacts with deduplication
+  </Card>
+  <Card title="Snapshots" icon="camera" href="./snapshots">
+    What snapshot metadata is encrypted
+  </Card>
+  <Card title="Backends" icon="server" href="./backends">
+    Where encrypted data is stored
+  </Card>
+</CardGroup>

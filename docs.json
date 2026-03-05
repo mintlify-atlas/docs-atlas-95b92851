@@ -1,122 +1,114 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Rustic Core",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#9c2f06",
+    "light": "#1c79a5",
+    "dark": "#a68779"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/7f91e4dd-8331-42ca-a872-3e782ce55259.svg",
+  "logo": {
+    "light": "https://media.brand.dev/7f91e4dd-8331-42ca-a872-3e782ce55259.svg",
+    "dark": "https://media.brand.dev/7f91e4dd-8331-42ca-a872-3e782ce55259.svg"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/rustic-rs/rustic_core"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/rustic-rs/rustic_core"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "installation",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/repository",
+              "concepts/snapshots",
+              "concepts/encryption",
+              "concepts/deduplication",
+              "concepts/backends"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Guides",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "guides/backup",
+              "guides/restore",
+              "guides/repository-management",
+              "guides/configuration",
+              "guides/backends-setup"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Examples",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "examples/init-repository",
+              "examples/create-snapshot",
+              "examples/restore-snapshot",
+              "examples/check-repository",
+              "examples/prune-repository"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Core API",
             "pages": [
-              "api-reference/introduction"
+              "api/repository",
+              "api/repository-options",
+              "api/credentials"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Operations",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/backup",
+              "api/restore",
+              "api/check",
+              "api/prune",
+              "api/snapshots"
+            ]
+          },
+          {
+            "group": "Data Types",
+            "pages": [
+              "api/repofile",
+              "api/blob",
+              "api/index",
+              "api/crypto",
+              "api/chunker"
+            ]
+          },
+          {
+            "group": "Backends",
+            "pages": [
+              "api/backend-trait",
+              "api/backend-options",
+              "api/supported-backends"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

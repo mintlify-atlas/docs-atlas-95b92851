@@ -1,0 +1,315 @@
+---
+title: Prune Repository
+description: Learn how to optimize and clean up a rustic_core repository
+---
+
+This example demonstrates how to prune a repository to reclaim space and optimize storage. Pruning removes unused data, repacks fragmented data, and applies retention policies to remove old snapshots.
+
+## Complete Example
+
+```rust
+use rustic_backend::BackendOptions;
+use rustic_core::{Credentials, PruneOptions, Repository, RepositoryOptions};
+use simplelog::{Config, LevelFilter, SimpleLogger};
+use std::error::Error;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    // Display info logs
+    let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+
+    // Initialize Backends
+    let backends = BackendOptions::default()
+        .repository("/tmp/repo")
+        .to_backends()?;
+
+    // Open repository
+    let repo_opts = RepositoryOptions::default();
+
+    let repo = Repository::new(&repo_opts, &backends)?.open(&Credentials::password("test"))?;
+
+    let prune_opts = PruneOptions::default();
+    let prune_plan = repo.prune_plan(&prune_opts)?;
+    println!("{:?}", prune_plan.stats);
+    println!("to repack: {:?}", prune_plan.repack_packs());
+    // to run the plan uncomment this line:
+    // prune_plan.do_prune(&repo, &prune_opts)?;
+    Ok(())
+}
+```
+
+## Step-by-Step Explanation
+
+### 1. Set up logging
+
+```rust
+let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+```
+
+Enable logging to track prune progress, including pack files being processed and space being reclaimed.
+
+### 2. Configure the backend
+
+```rust
+let backends = BackendOptions::default()
+    .repository("/tmp/repo")
+    .to_backends()?;
+```
+
+Connect to the repository backend where your backup data is stored.
+
+### 3. Open the repository
+
+```rust
+let repo_opts = RepositoryOptions::default();
+let repo = Repository::new(&repo_opts, &backends)?.open(&Credentials::password("test"))?;
+```
+
+Open the repository with authentication. Pruning requires write access to reorganize and remove data.
+
+### 4. Configure prune options
+
+```rust
+let prune_opts = PruneOptions::default();
+```
+
+Set pruning behavior using default options. The defaults provide:
+- Repack pack files that are less than 80% used
+- Remove unreferenced data
+- Optimize pack file sizes
+
+### 5. Create a prune plan
+
+```rust
+let prune_plan = repo.prune_plan(&prune_opts)?;
+```
+
+Analyze the repository and create a pruning plan. This step:
+- Identifies unused data blobs
+- Finds fragmented pack files to repack
+- Calculates how much space can be reclaimed
+- Determines which operations are needed
+
+**Important**: Creating a plan doesn't modify the repository - it's safe and non-destructive.
+
+### 6. Review the plan
+
+```rust
+println!("{:?}", prune_plan.stats);
+println!("to repack: {:?}", prune_plan.repack_packs());
+```
+
+Inspect what the prune operation will do:
+- **stats**: Statistics about data to be removed or repacked
+- **repack_packs()**: List of pack files that will be reorganized
+
+Reviewing the plan helps you understand the impact before making changes.
+
+### 7. Execute the plan
+
+```rust
+// prune_plan.do_prune(&repo, &prune_opts)?;
+```
+
+Execute the actual prune operation. This will:
+- Remove unused data blobs
+- Repack fragmented pack files
+- Delete old pack files
+- Update the index
+- Reclaim storage space
+
+<Warning>
+  **Warning**: Pruning modifies the repository and removes data. Always ensure you have:
+  - A recent backup or repository copy
+  - No concurrent backup operations running
+  - Sufficient disk space for repacking operations
+</Warning>
+
+## Expected Output
+
+When creating a prune plan, you'll see analysis results:
+
+```
+PruneStats {
+    packs_to_keep: 45,
+    packs_to_repack: 8,
+    packs_to_remove: 3,
+    size_to_remove: 145678912,       // ~139 MB
+    size_to_repack: 523456789,       // ~499 MB
+    size_after_prune: 2147483648,    // ~2.0 GB
+    blobs_unused: 1234,
+}
+
+to repack: [
+    "5e6f7g8h9i0j1k2l",
+    "3m4n5o6p7q8r9s0t",
+    ...
+]
+```
+
+During execution (`do_prune`), you'll see progress:
+
+```
+INFO - starting prune operation
+INFO - processing 8 pack files for repacking
+INFO - repacked: 1/8 (62.4 MB)
+INFO - repacked: 4/8 (249.8 MB)
+INFO - repacked: 8/8 (499.2 MB)
+INFO - removing 3 unused pack files
+INFO - removed 139 MB
+INFO - updating index
+INFO - prune completed: reclaimed 139 MB, optimized 499 MB
+```
+
+## Advanced Configuration
+
+### Custom Repack Threshold
+
+```rust
+// Repack pack files that are less than 50% utilized
+let prune_opts = PruneOptions::default()
+    .max_unused("50%");
+```
+
+### Limit Repacking Size
+
+```rust
+// Don't repack more than 1GB of data
+let prune_opts = PruneOptions::default()
+    .max_repack("1GB");
+```
+
+### Keep Pack Files Above Size Threshold
+
+```rust
+// Don't repack pack files larger than 100MB
+let prune_opts = PruneOptions::default()
+    .repack_cacheable_only(true);
+```
+
+### Dry Run Mode
+
+Always review the plan before executing:
+
+```rust
+let prune_plan = repo.prune_plan(&prune_opts)?;
+
+// Review statistics
+if prune_plan.stats.size_to_remove > 1_000_000_000 {
+    println!("Warning: Would remove more than 1GB");
+    // Decide whether to proceed
+}
+
+// Only proceed if beneficial
+if prune_plan.stats.size_to_remove > 100_000_000 {
+    prune_plan.do_prune(&repo, &prune_opts)?;
+} else {
+    println!("Skipping prune: minimal benefit");
+}
+```
+
+## When to Prune
+
+### After Removing Snapshots
+
+When you delete old snapshots with `forget`, the data remains in the repository. Prune removes it:
+
+```rust
+// First, forget old snapshots
+let forget_opts = ForgetOptions::default()
+    .keep_last(10);
+repo.forget(&forget_opts)?;
+
+// Then prune to reclaim space
+let prune_plan = repo.prune_plan(&PruneOptions::default())?;
+prune_plan.do_prune(&repo, &PruneOptions::default())?;
+```
+
+### Regular Maintenance
+
+Schedule pruning based on repository activity:
+
+- **High activity** (daily backups): Prune weekly
+- **Medium activity** (weekly backups): Prune monthly  
+- **Low activity** (monthly backups): Prune quarterly
+
+### Signs You Need to Prune
+
+- Repository size keeps growing despite stable data
+- Many snapshots have been deleted
+- Backup performance has degraded
+- You see warnings about fragmented pack files
+
+## Best Practices
+
+<Tip>
+  Always create a prune plan and review the statistics before executing. This helps you understand the impact and catch any unexpected changes.
+</Tip>
+
+### Safe Pruning Workflow
+
+1. **Check repository first**:
+   ```rust
+   repo.check(CheckOptions::default())?;
+   ```
+
+2. **Create and review plan**:
+   ```rust
+   let plan = repo.prune_plan(&prune_opts)?;
+   println!("Will reclaim: {} bytes", plan.stats.size_to_remove);
+   ```
+
+3. **Execute prune**:
+   ```rust
+   plan.do_prune(&repo, &prune_opts)?;
+   ```
+
+4. **Verify integrity after**:
+   ```rust
+   repo.check(CheckOptions::default())?;
+   ```
+
+### Performance Optimization
+
+For large repositories:
+
+```rust
+let prune_opts = PruneOptions::default()
+    .max_repack("5GB")           // Limit work per run
+    .fast_repack(true);          // Optimize for speed
+```
+
+Run pruning during low-activity periods as it can be I/O intensive.
+
+## Error Handling
+
+```rust
+match prune_plan.do_prune(&repo, &prune_opts) {
+    Ok(_) => {
+        println!("Prune completed successfully");
+    }
+    Err(e) => {
+        eprintln!("Prune failed: {}", e);
+        // Common errors:
+        // - Insufficient disk space for repacking
+        // - Repository locked by another process  
+        // - Network errors with remote backend
+        // - Corrupted pack files
+        
+        // Run check to verify repository integrity
+        repo.check(CheckOptions::default())?;
+    }
+}
+```
+
+## Related API Documentation
+
+- [PruneOptions](/api/prune) - Configure pruning behavior
+- [PrunePlan](/api/prune) - Analyze and execute prune operations
+- [Repository::prune_plan()](/api/prune) - Create prune plan
+- [ForgetOptions](/api/snapshots) - Remove old snapshots
+
+## Next Steps
+
+- Learn about [snapshot retention policies](/guides/repository-management#snapshot-policies)
+- Set up [automated maintenance](/guides/repository-management#maintenance-schedule) tasks
+- Understand [repository architecture](/concepts/repository) for optimization

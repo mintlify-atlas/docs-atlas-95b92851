@@ -1,0 +1,472 @@
+---
+title: Deduplication
+description: How rustic_core eliminates duplicate data using content-defined chunking
+---
+
+rustic_core uses **content-defined chunking (CDC)** with **Rabin fingerprinting** to efficiently deduplicate data across and within backups.
+
+## Why Deduplication Matters
+
+<Note>
+Deduplication can reduce storage by 50-90% for typical backup scenarios by storing each unique piece of data only once.
+</Note>
+
+### Without Deduplication
+
+```
+Backup 1: [File A] [File B] [File C]          = 3 GB
+Backup 2: [File A] [File B*] [File C] [File D] = 3.5 GB
+Total: 6.5 GB stored
+```
+
+### With Deduplication
+
+```
+Backup 1: [File A] [File B] [File C]          = 3 GB  
+Backup 2: [File B* changed] [File D]          = 0.5 GB (reuses A and C)
+Total: 3.5 GB stored (46% reduction)
+```
+
+## Content-Defined Chunking
+
+Instead of splitting files at fixed offsets, CDC splits based on **file content**:
+
+<CardGroup cols={2}>
+  <Card title="Fixed-Size Chunking" icon="scissors">
+    ❌ Split every 1MB regardless of content
+    
+    **Problem**: Inserting data shifts all chunks
+    
+    ```
+    Before: [AAAA][BBBB][CCCC]
+    After:  [xAAA][ABBB][BCCC][C...]
+    ```
+    
+    All chunks changed!
+  </Card>
+  
+  <Card title="Content-Defined Chunking" icon="fingerprint">
+    ✅ Split based on data patterns
+    
+    **Benefit**: Inserts only affect nearby chunks
+    
+    ```
+    Before: [AAAA][BBBB][CCCC]
+    After:  [x][AAAA][BBBB][CCCC]
+    ```
+    
+    Only one new chunk!
+  </Card>
+</CardGroup>
+
+## How Rabin Chunking Works
+
+Rabin fingerprinting uses a **rolling hash** to find natural split points:
+
+<Steps>
+  <Step title="Rolling Hash">
+    Compute a polynomial hash over a sliding window (64 bytes):
+    
+    ```rust
+    use rustic_cdc::Rabin64;
+    
+    let poly = 0x003D_A335_8B4D_C173;  // Irreducible polynomial
+    let rabin = Rabin64::new_with_polynom(6, &poly);
+    ```
+  </Step>
+  
+  <Step title="Find Cut Points">
+    When the hash matches a pattern (split mask), create a chunk:
+    
+    ```rust
+    let split_mask = chunk_size - 1;  // e.g., 0xFFFFF for 1MB
+    
+    for byte in data {
+        rabin.slide(byte);
+        if (rabin.hash & split_mask) == 0 {
+            // Split here!
+            break;
+        }
+    }
+    ```
+    
+    The pattern match creates chunks of average size ~1MB.
+  </Step>
+  
+  <Step title="Size Boundaries">
+    Enforce minimum and maximum chunk sizes:
+    
+    - **Min size** (512 KB): Prevent tiny chunks
+    - **Max size** (8 MB): Force split if no pattern found
+    
+    ```rust
+    if size < min_size {
+        continue;  // Keep reading
+    }
+    if size >= max_size {
+        break;     // Force split
+    }
+    ```
+  </Step>
+</Steps>
+
+### Rabin Polynomial
+
+The chunker uses an irreducible polynomial for Rabin fingerprinting:
+
+```rust
+pub struct ConfigFile {
+    pub chunker_polynomial: String,  // "3da3358b4dc173" (hex)
+    pub chunk_size: Option<usize>,   // 1048576 (1 MB average)
+    pub chunk_min_size: Option<usize>,  // 524288 (512 KB)
+    pub chunk_max_size: Option<usize>,  // 8388608 (8 MB)
+}
+```
+
+<Tip>
+The polynomial is stored in the repository config. All backups must use the **same polynomial** for deduplication to work.
+</Tip>
+
+## Chunk Size Configuration
+
+Chunk sizes affect deduplication efficiency and performance:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `chunk_size` | 1 MB | Average chunk size (must be power of 2) |
+| `chunk_min_size` | 512 KB | Minimum chunk size |
+| `chunk_max_size` | 8 MB | Maximum chunk size |
+
+### Choosing Chunk Sizes
+
+<Tabs>
+  <Tab title="Smaller Chunks (512 KB avg)">
+    **Pros:**
+    - Better deduplication (finer granularity)
+    - More efficient for small changes
+    
+    **Cons:**
+    - More chunks = larger index
+    - Higher memory usage
+    - More overhead
+    
+    **Best for:** Databases, logs, frequently changing files
+  </Tab>
+  
+  <Tab title="Default Chunks (1 MB avg)">
+    **Pros:**
+    - Balanced deduplication and performance
+    - Reasonable index size
+    - Good for most use cases
+    
+    **Cons:**
+    - (none significant)
+    
+    **Best for:** General-purpose backups
+  </Tab>
+  
+  <Tab title="Larger Chunks (2-4 MB avg)">
+    **Pros:**
+    - Smaller index
+    - Lower memory usage  
+    - Better for large files
+    
+    **Cons:**
+    - Less deduplication granularity
+    - Small changes affect larger chunks
+    
+    **Best for:** Media files, archives, infrequently changing data
+  </Tab>
+</Tabs>
+
+### Example Configuration
+
+```rust
+use rustic_core::ConfigOptions;
+
+let config_opts = ConfigOptions {
+    chunker: Some(Chunker::Rabin),
+    chunk_size: Some(2 * 1024 * 1024),      // 2 MB average
+    chunk_min_size: Some(1 * 1024 * 1024),  // 1 MB min
+    chunk_max_size: Some(16 * 1024 * 1024), // 16 MB max
+    ..Default::default()
+};
+```
+
+<Warning>
+Chunk sizes are set at repository creation and cannot be changed. Choose carefully!
+</Warning>
+
+## Deduplication Process
+
+### 1. Chunking
+
+Large files are split into chunks:
+
+```rust
+use rustic_core::chunker::ChunkIter;
+
+let chunker = ChunkIter::from_config(&config, file_reader, file_size)?;
+
+for chunk in chunker {
+    let chunk_data = chunk?;
+    // Process chunk...
+}
+```
+
+### 2. Content Addressing
+
+Each chunk gets a unique ID from its SHA-256 hash:
+
+```rust
+use rustic_core::crypto::hasher::hash;
+
+let chunk_id = hash(&chunk_data);  // SHA-256
+```
+
+<Note>
+Identical content always produces the same ID, regardless of:
+- File name or path
+- Modification time  
+- Location in repository
+- Which backup it came from
+</Note>
+
+### 3. Deduplication Check
+
+Before storing, check if chunk already exists:
+
+```rust
+// Look up chunk in index
+if let Some(index_entry) = index.get_id(BlobType::Data, &chunk_id) {
+    // Chunk exists! Skip upload
+    statistics.files_unmodified += 1;
+} else {
+    // New chunk, need to save
+    save_chunk(&chunk_id, &chunk_data)?;
+    statistics.data_added += chunk_data.len();
+}
+```
+
+### 4. Packing
+
+New chunks are packed together for efficient storage:
+
+```rust
+// Multiple chunks -> single pack file  
+let pack = Packer::new(
+    be.clone(),
+    BlobType::Data,
+    indexer.clone(),
+    config,
+    total_size,
+)?;
+
+for chunk in new_chunks {
+    pack.add(chunk_id, chunk_data)?;
+}
+
+let pack_id = pack.finalize()?;
+```
+
+## Deduplication Statistics
+
+The backup summary shows deduplication effectiveness:
+
+```rust
+pub struct SnapshotSummary {
+    pub data_added: u64,         // Total uncompressed bytes
+    pub data_added_packed: u64,   // After dedup + compression
+    
+    pub data_added_files: u64,    // New/changed file bytes
+    pub data_added_files_packed: u64,  // Actual stored
+}
+```
+
+### Example Output
+
+```
+Files:       15,234 changed, 42 new, 156 modified
+Size:        2.1 GB processed
+Added:       512 MB to repository (75% dedup + compression)
+Unchanged:   15,036 files reused from previous backup
+```
+
+### Calculating Deduplication Ratio
+
+```rust
+let dedup_ratio = 1.0 - (summary.data_added_packed as f64 
+                        / summary.data_added as f64);
+
+println!("Deduplication saved {:.1}%", dedup_ratio * 100.0);
+// Output: "Deduplication saved 75.6%"
+```
+
+## Global Deduplication
+
+rustic_core deduplicates **across all snapshots**:
+
+<Steps>
+  <Step title="Within Files">
+    Identical chunks within a single file are deduplicated.
+    
+    Example: Sparse files, repeated patterns
+  </Step>
+  
+  <Step title="Across Files">
+    Identical chunks in different files are deduplicated.
+    
+    Example: Copies of files, similar documents
+  </Step>
+  
+  <Step title="Across Snapshots">
+    Chunks from different backups are deduplicated.
+    
+    Example: Unchanged files in incremental backups
+  </Step>
+  
+  <Step title="Across Sources">
+    Different backup sources can share chunks.
+    
+    Example: Backing up multiple machines with similar OS/software
+  </Step>
+</Steps>
+
+<Card title="Deduplication Example" icon="chart-line">
+  Backing up 3 similar Linux machines:
+  
+  ```
+  Machine 1: 50 GB -> 50 GB stored
+  Machine 2: 50 GB -> +5 GB stored (90% dedup)
+  Machine 3: 50 GB -> +5 GB stored (90% dedup)
+  
+  Total: 150 GB data -> 60 GB stored (60% savings)
+  ```
+  
+  Most OS and application files are identical across machines!
+</Card>
+
+## Trade-offs
+
+<AccordionGroup>
+  <Accordion title="Storage vs Memory" icon="balance-scale">
+    Better deduplication requires larger indexes:
+    
+    **Index size grows with:**
+    - Number of unique chunks
+    - Smaller chunk sizes (more chunks)
+    - Repository age (accumulated data)
+    
+    **Memory usage:**
+    ```rust
+    // Full index loads all blob metadata
+    let repo = repo.to_indexed()?;  // High memory
+    
+    // ID-only index for backups
+    let repo = repo.to_indexed_ids()?;  // Low memory
+    ```
+  </Accordion>
+  
+  <Accordion title="Chunk Size vs Dedup Ratio" icon="chart-line">
+    Smaller chunks = better deduplication but higher overhead:
+    
+    | Chunk Size | Dedup Ratio | Index Size | Performance |
+    |------------|-------------|------------|-------------|
+    | 256 KB | 95% | Large | Slower |
+    | 512 KB | 93% | Medium | Good |
+    | 1 MB | 90% | Small | Fast |
+    | 2 MB | 85% | Smaller | Faster |
+    | 4 MB | 80% | Smallest | Fastest |
+    
+    <Note>
+    Exact numbers depend on data characteristics. These are representative values.
+    </Note>
+  </Accordion>
+  
+  <Accordion title="CPU vs Storage" icon="microchip">
+    CDC requires computing rolling hashes:
+    
+    **Rabin chunking:**
+    - CPU cost: Moderate (polynomial math)
+    - Benefit: Excellent deduplication
+    - Hardware acceleration: Available on modern CPUs
+    
+    **Alternative: Fixed-size chunking**
+    - CPU cost: Minimal (just counting)
+    - Benefit: Lower overhead
+    - Trade-off: Poor deduplication with file changes
+    
+    ```rust
+    pub enum Chunker {
+        Rabin,      // Content-defined (default)
+        FixedSize,  // Fixed boundaries
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Advanced: Rabin Polynomial Math
+
+The Rabin chunker uses polynomial arithmetic in GF(2):
+
+```rust
+pub trait PolynomExtend {
+    fn irreducible(&self) -> bool;  // Check if polynomial is irreducible
+    fn gcd(self, other: Self) -> Self;  // Greatest common divisor
+    fn mulmod(self, other: Self, modulo: Self) -> Self;  // Multiply mod polynomial
+}
+```
+
+### Generating Random Polynomials
+
+rustic can generate irreducible polynomials for new repositories:
+
+```rust
+use rustic_core::chunker::rabin::random_poly;
+
+// Generate random irreducible polynomial of degree 53
+let poly = random_poly()?;
+
+// Use in repository config  
+let config = ConfigFile::new(2, repo_id, poly);
+```
+
+<Tip>
+Using different polynomials prevents deduplication between repositories, which can be useful for security (prevents fingerprinting attacks).
+</Tip>
+
+## Monitoring Deduplication
+
+Track deduplication efficiency over time:
+
+```rust
+use rustic_core::commands::repoinfo::RepoFileInfos;
+
+let infos = repo.infos_files()?;
+
+println!("Total packs: {}", infos.packs.len());
+println!("Total blobs: {}", infos.blobs);
+println!("Total size: {} bytes", infos.total_size);
+
+// Calculate average deduplication
+let compression_ratio = infos.total_size_compressed as f64 
+                       / infos.total_size as f64;
+println!("Overall compression: {:.1}%", (1.0 - compression_ratio) * 100.0);
+```
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Repository" icon="database" href="./repository">
+    How deduplicated data is organized
+  </Card>
+  <Card title="Encryption" icon="lock" href="./encryption">
+    How encryption preserves deduplication
+  </Card>
+  <Card title="Backends" icon="server" href="./backends">
+    Where deduplicated packs are stored
+  </Card>
+  <Card title="Snapshots" icon="camera" href="./snapshots">
+    How snapshots reference deduplicated chunks
+  </Card>
+</CardGroup>

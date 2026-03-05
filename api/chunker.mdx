@@ -1,0 +1,347 @@
+---
+title: Chunking Algorithms
+description: Content-defined and fixed-size chunking for data deduplication
+---
+
+The chunker module splits large files into smaller chunks (blobs) for deduplication and efficient storage. Rustic supports two chunking algorithms configured per repository.
+
+## Overview
+
+Chunking converts files into variable or fixed-size pieces:
+
+```
+File (10 MB)  →  [Chunk 1][Chunk 2][Chunk 3]  →  Blobs
+                   1.2 MB   850 KB   2.1 MB
+```
+
+**Benefits**:
+- **Deduplication**: Identical chunks across files stored once
+- **Efficient updates**: Only modified chunks need re-upload
+- **Parallelization**: Process multiple chunks concurrently
+
+## Chunker Types
+
+```rust
+use rustic_core::repofile::configfile::Chunker;
+
+pub enum Chunker {
+    Rabin,      // Content-defined (default)
+    FixedSize,  // Fixed-size chunks
+}
+```
+
+Configured in `ConfigFile`:
+
+```rust
+let config = ConfigFile {
+    chunker: Some(Chunker::Rabin),
+    chunk_size: Some(1024 * 1024),      // 1 MiB average
+    chunk_min_size: Some(512 * 1024),   // 512 KiB min
+    chunk_max_size: Some(8 * 1024 * 1024), // 8 MiB max
+    ..Default::default()
+};
+```
+
+## Rabin Chunker (Content-Defined)
+
+Uses rolling hash fingerprints to find chunk boundaries based on content.
+
+### How It Works
+
+1. **Sliding window**: Compute hash over last 64 bytes
+2. **Boundary detection**: When `hash & mask == 0`
+3. **Min/max enforcement**: Respect size constraints
+
+```rust
+use rustic_core::chunker::rabin::ChunkIter;
+use rustic_cdc::{Rabin64, RollingHash64};
+
+// Create Rabin chunker
+let poly = 0x3DA3358B4DC173;
+let rabin = Rabin64::new_with_polynom(poly);
+
+let chunker = ChunkIter::new(
+    rabin,
+    1024 * 1024,     // chunk_size (must be power of 2)
+    512 * 1024,      // chunk_min_size
+    8 * 1024 * 1024, // chunk_max_size
+    file_reader,
+    file_size_hint,
+)?;
+
+// Iterate over chunks
+for chunk in chunker {
+    let data = chunk?;
+    process_chunk(data);
+}
+```
+
+### Chunk Boundary Detection
+
+The split mask determines average chunk size:
+
+```rust
+// chunk_size must be power of 2
+let split_mask = chunk_size - 1;
+
+// Boundary when low bits are zero
+if (rabin.hash & split_mask) == 0 {
+    // End current chunk
+}
+```
+
+**Example** (chunk_size = 1 MiB = 2^20):
+- mask = 0xFFFFF (20 bits)
+- Probability of boundary = 1 / 2^20 ≈ 1 / 1M bytes
+- Average chunk size ≈ 1 MiB
+
+### Size Constraints
+
+```rust
+// Minimum size: always read this much first
+reader.read_exact(&mut chunk[..chunk_min_size])?;
+
+// Then look for boundary
+loop {
+    if chunk.len() >= chunk_max_size {
+        break; // Force chunk end
+    }
+    if (rabin.hash & split_mask) == 0 {
+        break; // Natural boundary
+    }
+    // Keep reading...
+}
+```
+
+### Advantages
+
+- **Resilient to edits**: Insertions/deletions only affect nearby chunks
+- **Better deduplication**: Same content = same chunks regardless of position
+- **Variable sizes**: Adapts to content structure
+
+### Configuration
+
+```rust
+use rustic_core::repofile::configfile::ConfigFile;
+
+let config = ConfigFile {
+    chunker: Some(Chunker::Rabin),
+    chunker_polynomial: "3da3358b4dc173".to_string(),
+    chunk_size: Some(1 * 1024 * 1024),     // 1 MiB average
+    chunk_min_size: Some(512 * 1024),      // 512 KiB min
+    chunk_max_size: Some(8 * 1024 * 1024), // 8 MiB max
+    ..Default::default()
+};
+```
+
+**Requirements**:
+- `chunk_size` must be a power of 2
+- `chunk_min_size ≤ chunk_size`
+- `chunk_max_size ≥ chunk_size`
+
+## Fixed-Size Chunker
+
+Splits files into equal-size chunks (except last).
+
+### Usage
+
+```rust
+use rustic_core::chunker::fixed_size::ChunkIter;
+
+let chunk_size = 1024 * 1024; // 1 MiB
+
+let chunker = ChunkIter::new(
+    chunk_size,
+    file_reader,
+    file_size_hint,
+);
+
+// Iterate over chunks
+for chunk in chunker {
+    let data = chunk?;
+    assert!(data.len() <= chunk_size);
+}
+```
+
+### Advantages
+
+- **Simple**: Predictable chunk sizes
+- **Fast**: No hash computation
+- **Deterministic**: Same file = same chunks every time
+
+### Disadvantages
+
+- **Poor deduplication**: Insertions shift all following chunks
+- **File-level only**: Can't deduplicate parts of files
+
+### When to Use
+
+- Small repositories (deduplication less important)
+- Append-only files (no insertions)
+- Maximum performance (no hashing overhead)
+
+## Chunking in Practice
+
+### During Backup
+
+```rust
+// Read file and chunk it
+let file = File::open(path)?;
+let file_size = file.metadata()?.len();
+
+// Create chunker based on config
+let chunker = match config.chunker() {
+    Chunker::Rabin => {
+        let rabin = Rabin64::new_with_polynom(config.poly()?);
+        ChunkIter::new_rabin(
+            rabin,
+            config.chunk_size(),
+            config.chunk_min_size(),
+            config.chunk_max_size(),
+            file,
+            file_size as usize,
+        )?
+    }
+    Chunker::FixedSize => {
+        ChunkIter::new_fixed(
+            config.chunk_size(),
+            file,
+            file_size as usize,
+        )
+    }
+};
+
+// Process chunks
+let mut blob_ids = Vec::new();
+for chunk in chunker {
+    let data = chunk?;
+    let blob_id = hash(&data).into();
+    
+    // Check if blob exists
+    if !index.has_blob(&blob_id) {
+        packer.add(&data)?;
+    }
+    
+    blob_ids.push(blob_id);
+}
+```
+
+### Chunk Storage
+
+Chunks become data blobs:
+
+```rust
+// Each chunk = one blob
+let chunk_data = chunker.next()?.unwrap();
+let blob_id = hash(&chunk_data).into();
+
+// Store in pack file
+let encrypted = key.encrypt_data(&chunk_data)?;
+packer.add_blob(blob_id, encrypted)?;
+
+// Record in file node
+node.content = Some(blob_ids);
+```
+
+## Chunk Statistics
+
+### Distribution
+
+Rabin chunking produces size distribution:
+
+```
+Min: 512 KiB  ━━━━━━━━━━━━━━━━━━━━━━
+Avg: 1 MiB    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Max: 8 MiB    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+              └──────────────────────────────────┘
+              Chunk size range
+```
+
+### Performance Impact
+
+**Smaller chunks**:
+- ✓ Better deduplication
+- ✗ More blobs to manage
+- ✗ Higher index size
+- ✗ More overhead
+
+**Larger chunks**:
+- ✓ Fewer blobs
+- ✓ Lower overhead
+- ✗ Less deduplication
+- ✗ Larger transfers for small changes
+
+**Default** (1 MiB avg) balances these trade-offs.
+
+## Chunker Polynomial
+
+The polynomial affects chunk boundaries:
+
+```rust
+// Random polynomial generation
+use rustic_cdc::{Polynom, Polynom64};
+
+let poly = Polynom64::generate_irreducible_random(42)?;
+println!("Polynomial: 0x{:x}", poly);
+```
+
+**Recommendation**: Use the default polynomial unless you have specific needs. Different polynomials produce different chunk boundaries, breaking deduplication across repositories.
+
+## Compatibility
+
+Chunking is **per-repository**:
+- Set once during `repo init`
+- Cannot be changed later
+- Mixing chunkers breaks deduplication
+
+```rust
+// Check compatibility before copy/merge
+if !source_config.has_same_chunker(&dest_config) {
+    return Err("Incompatible chunking configuration");
+}
+```
+
+## rustic_cdc Integration
+
+Rustic uses the [`rustic_cdc`](https://crates.io/crates/rustic_cdc) crate:
+
+```rust
+use rustic_cdc::{Rabin64, RollingHash64};
+
+let mut rabin = Rabin64::new_with_polynom(poly);
+
+// Reset and prefill window
+rabin.reset_and_prefill_window(initial_data.iter().copied());
+
+// Slide over bytes
+for byte in data {
+    rabin.slide(byte);
+    
+    if (rabin.hash & split_mask) == 0 {
+        // Chunk boundary
+    }
+}
+```
+
+## Performance Tips
+
+1. **Buffer size**: Use 4 KiB reads (default)
+2. **Size hints**: Provide accurate file size for memory allocation
+3. **Parallel chunking**: Process multiple files concurrently
+4. **Reuse chunkers**: Avoid recreating Rabin state
+
+```rust
+// Efficient: reuse chunker state
+let mut rabin = Rabin64::new_with_polynom(poly);
+
+for file in files {
+    let chunker = ChunkIter::new(rabin.clone(), ...);
+    process_file(chunker)?;
+}
+```
+
+## See Also
+
+- [Blob Types](/api/blob) - Chunk storage as blobs
+- [Repository Files](/api/repofile) - ConfigFile chunker settings
+- [Crypto](/api/crypto) - Hashing chunks for IDs

@@ -1,0 +1,207 @@
+---
+title: Repository File Types
+description: Repository file formats and structures used for persistence
+---
+
+The `repofile` module contains lower-level data structures representing files stored in a rustic repository. These types are serialized to JSON (or binary for pack headers) and saved to the backend.
+
+## Overview
+
+Repository files are the persistent representation of repository metadata and configuration. All types in this module implement `Serialize` and `Deserialize`, and are typically stored encrypted in the backend.
+
+## Core File Types
+
+### ConfigFile
+
+The repository configuration file describes all repository-wide settings.
+
+**Location**: `config` in the repository root
+
+**Key Fields**:
+- `version`: Repository version (1 or 2 supported)
+- `id`: Unique repository identifier
+- `chunker_polynomial`: Polynomial used for Rabin chunking
+- `chunk_size`: Average chunk size for content-defined chunking
+- `compression`: Compression level (v2 only)
+- `treepack_size`, `datapack_size`: Pack size parameters
+
+**Example**:
+```rust
+use rustic_core::repofile::configfile::{ConfigFile, RepositoryId};
+
+// Create a new config file
+let repo_id = RepositoryId::default();
+let poly = 0x3DA3358B4DC173;
+let config = ConfigFile::new(2, repo_id, poly);
+
+// Access chunker settings
+let chunk_size = config.chunk_size(); // 1 MiB default
+let chunker = config.chunker(); // Chunker::Rabin
+```
+
+### KeyFile
+
+Key files store repository access credentials using scrypt key derivation.
+
+**Location**: `/keys/<ID>` in the repository
+
+**Key Fields**:
+- `hostname`, `username`: Creation metadata
+- `created`: Key creation timestamp
+- `kdf`: Key derivation function ("scrypt")
+- `n`, `r`, `p`: scrypt parameters
+- `data`: Encrypted master key
+- `salt`: Random salt for scrypt
+
+**Example**:
+```rust
+use rustic_core::repofile::keyfile::{KeyFile, MasterKey};
+use rustic_core::crypto::aespoly1305::Key;
+
+// Generate a new key file
+let master_key = MasterKey::new();
+let password = "my-secure-password";
+let key_file = KeyFile::generate(
+    master_key.key(),
+    &password,
+    Some("my-hostname".to_string()),
+    Some("user".to_string()),
+    true, // with creation time
+)?;
+
+// Derive key from password
+let key = key_file.key_from_password(&password)?;
+```
+
+### SnapshotFile
+
+Snapshot metadata representing a backup at a point in time.
+
+**Location**: `/snapshots/<ID>` in the repository
+
+**Key Fields**:
+- `time`: Snapshot timestamp
+- `tree`: Root tree blob ID
+- `paths`: List of backed-up paths
+- `hostname`: Source hostname
+- `tags`: Snapshot tags for filtering
+- `parent`: Parent snapshot ID (for incremental backups)
+- `summary`: Backup statistics
+
+**Example**:
+```rust
+use rustic_core::repofile::snapshotfile::{SnapshotFile, SnapshotOptions};
+
+// Create snapshot from options
+let opts = SnapshotOptions::default()
+    .label("production-backup")
+    .add_tags("daily,prod")?;
+
+let snapshot = opts.to_snapshot()?;
+
+// Access snapshot metadata
+println!("Backup time: {}", snapshot.time);
+println!("Tags: {}", snapshot.tags);
+```
+
+### IndexFile
+
+Index files map blob IDs to their location within pack files.
+
+**Location**: `/index/<ID>` in the repository
+
+**Key Fields**:
+- `packs`: List of indexed packs
+- `packs_to_delete`: Packs marked for deletion
+- Each pack contains:
+  - `id`: Pack file ID
+  - `blobs`: List of blob locations
+  - `time`: Pack creation/deletion time
+  - `size`: Total pack size
+
+**Example**:
+```rust
+use rustic_core::repofile::indexfile::{IndexFile, IndexPack, IndexBlob};
+use rustic_core::blob::BlobType;
+
+// Access index information
+for pack in index_file.packs {
+    println!("Pack {}: {} blobs", pack.id, pack.blobs.len());
+    for blob in pack.blobs {
+        println!("  Blob {} at offset {}", blob.id, blob.location.offset);
+    }
+}
+```
+
+### PackFile
+
+Pack files are binary containers storing multiple blobs.
+
+**Structure**:
+- Blob data (concatenated)
+- Pack header (encrypted)
+- Header length (4 bytes)
+
+**Key Types**:
+- `PackHeader`: Decoded header with blob locations
+- `HeaderEntry`: Individual blob entry (compressed or uncompressed)
+
+**Example**:
+```rust
+use rustic_core::repofile::packfile::{PackHeader, PackId};
+
+// Read pack header from backend
+let pack_header = PackHeader::from_file(
+    &backend,
+    pack_id,
+    Some(4096), // size hint
+    pack_size,
+)?;
+
+// Access contained blobs
+for blob in pack_header.into_blobs() {
+    println!("Blob {}: {} bytes", blob.id, blob.location.length);
+}
+```
+
+## Serialization Format
+
+All repository files (except pack headers) are serialized as JSON:
+
+```json
+{
+  "version": 2,
+  "id": "8f3c7e4a...",
+  "chunker_polynomial": "3da3358b4dc173",
+  "compression": 3
+}
+```
+
+Pack headers use a binary format for efficiency:
+- Type byte (0=Data, 1=Tree, 2=CompData, 3=CompTree)
+- Length (u32 little-endian)
+- Optional uncompressed length (u32)
+- Blob ID (32 bytes)
+
+## When to Use These Types
+
+You'll interact with these types when:
+
+- **Initializing repositories**: Create `ConfigFile`
+- **Managing credentials**: Generate/read `KeyFile`
+- **Accessing snapshots**: List and filter `SnapshotFile`
+- **Rebuilding index**: Reconstruct `IndexFile`
+- **Low-level operations**: Read `PackFile` headers
+
+## Related Types
+
+- `StringList`: Sorted set of strings (tags, paths)
+- `PathList`: List of file system paths
+- `DeleteOption`: Snapshot deletion policies
+- `SnapshotSummary`: Backup statistics
+
+## See Also
+
+- [Repository](/api/repository) - High-level repository operations
+- [Blob Types](/api/blob) - Blob storage and retrieval
+- [Index](/api/index) - Index management

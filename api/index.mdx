@@ -1,0 +1,327 @@
+---
+title: Index Types
+description: Index structures for fast blob lookup and repository integrity
+---
+
+The index module provides fast mapping from blob IDs to their pack file locations. It enables efficient blob lookup, deduplication, and repository operations.
+
+## Overview
+
+Indexes serve two critical purposes:
+1. **Fast blob lookup**: Map blob ID → pack file + offset
+2. **Deduplication**: Check if blob already exists before writing
+
+The index is a two-level structure:
+- **Index files** stored in the backend (`/index/<ID>`)
+- **In-memory index** for fast lookups during operations
+
+## Index Architecture
+
+```
+Backend Index Files          In-Memory Index
+┌──────────────┐            ┌─────────────────┐
+│ index/aabbcc │ ───────→   │  BinarySearched │
+│ index/ddeeff │ ───────→   │  HashMap/BTree  │
+└──────────────┘            └─────────────────┘
+                                     ↓
+                            Fast blob_id → location
+```
+
+## IndexFile Structure
+
+Stored in the backend as JSON:
+
+```rust
+use rustic_core::repofile::indexfile::{IndexFile, IndexPack, IndexBlob};
+
+pub struct IndexFile {
+    pub supersedes: Option<Vec<IndexId>>,  // Replaced indices
+    pub packs: Vec<IndexPack>,              // Active packs
+    pub packs_to_delete: Vec<IndexPack>,    // Marked for deletion
+}
+```
+
+### IndexPack
+
+Describes one pack file:
+
+```rust
+pub struct IndexPack {
+    pub id: PackId,              // Pack file ID
+    pub blobs: Vec<IndexBlob>,   // Contained blobs
+    pub time: Option<Timestamp>, // Creation/deletion time
+    pub size: Option<u32>,       // Total pack size
+}
+```
+
+**Example**:
+```rust
+// Iterate index packs
+for pack in index_file.packs {
+    println!("Pack {}: {} blobs, {} bytes",
+        pack.id,
+        pack.blobs.len(),
+        pack.pack_size(),
+    );
+}
+```
+
+### IndexBlob
+
+Describes one blob within a pack:
+
+```rust
+use rustic_core::blob::{BlobType, BlobLocation};
+
+pub struct IndexBlob {
+    pub id: BlobId,                // Blob identifier
+    pub tpe: BlobType,             // Tree or Data
+    pub location: BlobLocation,    // Offset + length
+}
+```
+
+## Indexer
+
+The `Indexer` accumulates blob information and writes index files:
+
+```rust
+use rustic_core::index::indexer::Indexer;
+
+// Create indexer
+let mut indexer = Indexer::new(backend);
+
+// Add packs as they're created
+indexer.add(index_pack)?;
+
+// Finalize (writes index file if needed)
+indexer.finalize()?;
+```
+
+### Auto-saving
+
+The indexer automatically saves when:
+- **50,000 blobs** indexed (MAX_COUNT)
+- **5 minutes** elapsed (MAX_AGE)
+
+This prevents unbounded memory growth:
+
+```rust
+// Indexer tracks count and time
+impl Indexer {
+    pub fn add(&mut self, pack: IndexPack) -> Result<()> {
+        self.count += pack.blobs.len();
+        self.file.add(pack, false);
+        
+        // Auto-save if thresholds exceeded
+        if self.count >= 50_000 || self.age() >= 5min {
+            self.save()?;
+            self.reset();
+        }
+        Ok(())
+    }
+}
+```
+
+## In-Memory Index
+
+For fast lookups, indexes are loaded into memory:
+
+```rust
+use rustic_core::index::ReadGlobalIndex;
+
+// Load all indexes from backend
+let index = backend.load_index()?;
+
+// Look up a blob
+if let Some(blob_location) = index.get_blob(&blob_id) {
+    let data = blob_location.read_data(&backend)?;
+}
+```
+
+### IndexedBackend Trait
+
+```rust
+pub trait ReadGlobalIndex {
+    fn get_blob(&self, id: &BlobId) -> Option<BlobLocation>;
+    fn get_tree(&self, id: &TreeId) -> Option<BlobLocation>;
+    fn has_blob(&self, id: &BlobId) -> bool;
+}
+```
+
+## Building Indexes
+
+### From Scratch
+
+Scan all packs and rebuild the index:
+
+```rust
+use rustic_core::commands::repair::index::RepairIndexOptions;
+
+let opts = RepairIndexOptions::default()
+    .read_all(true);  // Read pack headers
+
+// Rebuild index from pack files
+let index = repo.repair_index(&opts)?;
+```
+
+### Incrementally
+
+Add new packs to existing index:
+
+```rust
+// Create pack
+let pack = packer.finalize()?;
+
+// Add to index
+let index_pack = IndexPack {
+    id: pack.id,
+    blobs: pack.blobs,
+    time: Some(Timestamp::now()),
+    size: Some(pack.size),
+};
+
+indexer.add(index_pack)?;
+```
+
+## Index Operations
+
+### Checking Blob Existence
+
+```rust
+use rustic_core::crypto::hasher::hash;
+
+// Before writing blob, check if it exists
+let blob_id = hash(&data).into();
+
+if indexer.has(&blob_id) {
+    // Already in current indexer batch
+    return Ok(blob_id);
+}
+
+if index.has_blob(&blob_id) {
+    // Already in repository
+    return Ok(blob_id);
+}
+
+// New blob, add to pack
+packer.add(&data)?;
+```
+
+### Listing All Blobs
+
+```rust
+// Iterate all index files
+for index_id in backend.list(FileType::Index)? {
+    let index_file: IndexFile = backend.get_file(&index_id)?;
+    
+    for pack in index_file.packs {
+        for blob in pack.blobs {
+            process_blob(blob.id, blob.location);
+        }
+    }
+}
+```
+
+## Index Optimization
+
+### Superseding Indices
+
+New index can replace multiple old ones:
+
+```rust
+let mut new_index = IndexFile::default();
+new_index.supersedes = Some(vec![old_id1, old_id2]);
+
+// After saving new index, old ones can be deleted
+```
+
+### Packs to Delete
+
+Mark packs for deletion during prune:
+
+```rust
+// Add pack to delete list
+let pack_to_delete = IndexPack {
+    id: pack_id,
+    time: Some(Timestamp::now()),
+    ..Default::default()
+};
+
+indexer.add_remove(pack_to_delete)?;
+```
+
+## Shared Indexer
+
+For multi-threaded operations:
+
+```rust
+use rustic_core::index::indexer::SharedIndexer;
+use std::sync::{Arc, RwLock};
+
+// Create shared indexer
+let indexer = Indexer::new(backend).into_shared();
+
+// Clone for each thread
+let indexer_clone = Arc::clone(&indexer);
+
+std::thread::spawn(move || {
+    let mut idx = indexer_clone.write().unwrap();
+    idx.add(pack)?;
+});
+```
+
+## Binary Sorted Index
+
+Internal implementation for fast lookups:
+
+```rust
+// Blobs sorted by ID for binary search
+struct BinarySorted {
+    blobs: Vec<(BlobId, BlobLocation)>,
+}
+
+impl BinarySorted {
+    fn get(&self, id: &BlobId) -> Option<&BlobLocation> {
+        // O(log n) binary search
+        self.blobs.binary_search_by_key(id, |(id, _)| *id)
+            .ok()
+            .map(|idx| &self.blobs[idx].1)
+    }
+}
+```
+
+## Index Performance
+
+**Memory usage**:
+- ~40 bytes per indexed blob
+- 1M blobs ≈ 40 MiB memory
+
+**Lookup speed**:
+- O(log n) for sorted arrays
+- O(1) for hash maps
+
+**Index size**:
+- ~50 bytes per blob (JSON)
+- Compressed when stored
+
+## When to Rebuild
+
+Rebuild the index when:
+- Index files are corrupted or missing
+- After manual pack deletion
+- Index becomes fragmented (many files)
+
+```rust
+// Check if rebuild needed
+let index_ids = backend.list(FileType::Index)?;
+if index_ids.len() > 100 {
+    // Too many index files, rebuild
+    repo.repair_index(&RepairIndexOptions::default())?;
+}
+```
+
+## See Also
+
+- [Repository Files](/api/repofile) - IndexFile format
+- [Blob Types](/api/blob) - Blob structure and locations
+- [Repository](/api/repository) - Index usage in operations

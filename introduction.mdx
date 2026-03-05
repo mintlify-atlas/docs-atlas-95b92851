@@ -1,0 +1,156 @@
+---
+title: Introduction to rustic_core
+description: A library for fast, encrypted, and deduplicated backups that powers rustic-rs
+---
+
+## What is rustic_core?
+
+rustic_core is a powerful Rust library for creating fast, encrypted, and deduplicated backups. It serves as the core foundation for [rustic-rs](https://rustic.cli.rs/), a modern backup solution written in Rust.
+
+The library implements the [restic repository format](https://github.com/restic/restic/blob/master/doc/design.rst), making it fully compatible with existing restic repositories while providing a native Rust API for building backup applications.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Fast & Efficient" icon="gauge-high">
+    Parallel processing with rayon, efficient chunking with CDC (Content-Defined Chunking), and optimized cryptographic operations
+  </Card>
+  <Card title="Encrypted" icon="lock">
+    AES-256-CTR encryption with Poly1305 authentication ensures your data is secure at rest
+  </Card>
+  <Card title="Deduplicated" icon="clone">
+    Content-defined chunking identifies duplicate data blocks across all snapshots, saving storage space
+  </Card>
+  <Card title="Restic Compatible" icon="handshake">
+    Read and write repositories in the restic format, allowing seamless interoperability
+  </Card>
+</CardGroup>
+
+## Core Capabilities
+
+rustic_core provides comprehensive backup operations:
+
+- **Repository Management**: Initialize, open, and configure backup repositories
+- **Backup Operations**: Create snapshots with incremental, deduplicated backups
+- **Restore Operations**: Restore full snapshots or individual files/directories
+- **Snapshot Management**: List, filter, group, and forget snapshots with flexible retention policies
+- **Repository Maintenance**: Check repository integrity, prune unused data, repair index files
+- **Multi-Backend Support**: Local filesystem, REST server, and more through rustic_backend
+- **Virtual File System**: Access repository contents through a VFS interface
+
+<Note>
+rustic_core is in active development and its API may change in upcoming releases. We welcome feedback through [GitHub Discussions](https://github.com/rustic-rs/rustic/discussions).
+</Note>
+
+## Why rustic_core?
+
+### Built with Rust
+
+Leveraging Rust's safety guarantees and performance characteristics:
+
+- Memory safety without garbage collection
+- Thread safety with fearless concurrency
+- Zero-cost abstractions for optimal performance
+- Rich type system preventing common errors at compile time
+
+### Restic Compatibility
+
+rustic_core maintains full compatibility with the restic repository format:
+
+- **Read existing repositories**: Access backups created with restic
+- **Shared repositories**: Use the same repository with both tools
+- **Migration path**: Transition from restic to rustic_core gradually
+- **Battle-tested format**: Benefit from restic's proven repository design
+
+<Info>
+The restic repository format is well-documented and designed for long-term archival, with built-in integrity checking and encryption.
+</Info>
+
+## Architecture Overview
+
+The library is structured around a stateful [`Repository`](/api/repository) type:
+
+```rust
+Repository::new(&repo_opts, &backends)?
+    .open(&credentials)?           // Open state
+    .to_indexed_ids()?             // IndexedIds state (for backup)
+    .backup(&backup_opts, &source, snap)?  // Returns snapshot
+```
+
+Different repository states enable different operations:
+
+- **Open**: Basic operations like listing snapshots, checking repository
+- **IndexedIds**: Required for backup operations, maintains blob index
+- **IndexedTree**: Optimized for operations on tree structures
+- **IndexedFull**: Full index for advanced operations like pruning
+
+## Key Types
+
+### Repository Types
+
+- `Repository<S>`: Main entry point, parameterized by state
+- `RepositoryOptions`: Configure repository access (passwords, hot/cold storage, etc.)
+- `RepositoryBackends`: Backend storage abstraction
+
+### Configuration Types
+
+- `ConfigOptions`: Repository configuration (chunker polynomial, compression, etc.)
+- `KeyOptions`: Encryption key options
+- `BackupOptions`: Backup behavior configuration
+- `RestoreOptions`: Restore behavior configuration
+- `PruneOptions`: Data pruning configuration
+
+### Data Types
+
+- `SnapshotFile`: Represents a backup snapshot
+- `Node`: File system entry (file, directory, symlink, etc.)
+- `Tree`: Directory tree structure
+- `PackFile`: Container for multiple blobs
+- `IndexFile`: Maps blob IDs to pack files
+
+## Use Cases
+
+rustic_core is ideal for:
+
+- Building custom backup tools with Rust
+- Integrating backup functionality into Rust applications
+- Creating specialized backup workflows
+- Developing backup automation systems
+- Building backup GUIs or web interfaces
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/rustic-rs/rustic_core">
+    Source code, issue tracker, and contributions
+  </Card>
+  <Card title="API Documentation" icon="book" href="https://docs.rs/rustic_core/">
+    Complete API reference on docs.rs
+  </Card>
+  <Card title="Discussions" icon="comments" href="https://github.com/rustic-rs/rustic/discussions">
+    Ask questions and share ideas
+  </Card>
+  <Card title="Discord Community" icon="discord" href="https://discord.gg/WRUWENZnzQ">
+    Chat with other users and developers
+  </Card>
+</CardGroup>
+
+## License
+
+rustic_core is dual-licensed under:
+
+- Apache License, Version 2.0
+- MIT License
+
+You may choose either license for your use.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add rustic_core to your project
+  </Card>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Create your first backup in minutes
+  </Card>
+</CardGroup>

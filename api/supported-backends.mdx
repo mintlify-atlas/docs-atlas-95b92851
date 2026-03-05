@@ -1,0 +1,492 @@
+---
+title: Supported Backends
+description: Complete list of supported storage backends and their configuration
+---
+
+Rustic supports multiple backend types for storing repository data. Each backend provides the same interface through the `ReadBackend` and `WriteBackend` traits, allowing you to choose the storage solution that best fits your needs.
+
+## SupportedBackend Enum
+
+```rust
+pub enum SupportedBackend {
+    Local,
+    #[cfg(feature = "rclone")]
+    Rclone,
+    #[cfg(feature = "rest")]
+    Rest,
+    #[cfg(feature = "opendal")]
+    OpenDAL,
+}
+```
+
+The backend type is determined from the repository URL prefix:
+- `local:` or no prefix → Local
+- `rclone:` → Rclone
+- `rest:` → REST
+- `opendal:` → OpenDAL
+
+## Local Backend
+
+Stores repository data on the local filesystem or network-mounted storage.
+
+### Features
+- Direct filesystem access
+- Fastest performance for local storage
+- Post-create and post-delete command hooks
+- Automatic directory structure creation
+- Supports all major filesystems
+
+### Repository Format
+
+```
+local:/path/to/repo      # Unix
+local:C:\path\to\repo   # Windows
+/path/to/repo            # Unix (implicit)
+C:\path\to\repo         # Windows (implicit)
+```
+
+### Configuration Options
+
+```rust
+use rustic_backend::{LocalBackend, BackendOptions};
+use std::collections::BTreeMap;
+
+let mut options = BTreeMap::new();
+options.insert(
+    "post-create-command".to_string(),
+    "echo Created %file of type %type with id %id".to_string()
+);
+options.insert(
+    "post-delete-command".to_string(),
+    "echo Deleted %file".to_string()
+);
+
+let backend = LocalBackend::new("/path/to/repo", options)?;
+```
+
+**Options**:
+- `post-create-command` - Command to run after creating a file
+- `post-delete-command` - Command to run after deleting a file
+
+**Command Placeholders**:
+- `%file` - Full file path
+- `%type` - File type directory name (e.g., "snapshots", "data")
+- `%id` - Hexadecimal file ID
+
+### Directory Structure
+
+```
+repo/
+├── config              # Repository configuration
+├── keys/               # Encryption keys
+├── snapshots/          # Snapshot metadata
+├── index/              # Pack file indices
+└── data/               # Pack files (256 subdirectories)
+    ├── 00/
+    ├── 01/
+    ├── ...
+    └── ff/
+```
+
+### Usage Examples
+
+```rust
+use rustic_backend::LocalBackend;
+use rustic_core::{ReadBackend, WriteBackend, FileType};
+use bytes::Bytes;
+
+// Create backend
+let backend = LocalBackend::new("/backup/repo", vec![])?;
+
+// Initialize repository
+backend.create()?;
+
+// Write data
+let data = Bytes::from("snapshot data");
+backend.write_bytes(FileType::Snapshot, &snapshot_id, true, data)?;
+
+// Read data
+let snapshots = backend.list(FileType::Snapshot)?;
+let data = backend.read_full(FileType::Snapshot, &snapshots[0])?;
+```
+
+## REST Backend
+
+Connects to a REST server compatible with the restic REST protocol.
+
+### Features
+- HTTP/HTTPS transport
+- Retry logic with exponential backoff
+- Custom CA certificates and client certificates
+- Configurable timeouts
+- Password authentication via URL
+- Range request support for partial reads
+
+### Repository Format
+
+```
+rest:http://localhost:8000
+rest:https://backup.example.com/repo
+rest:https://user:password@example.com/repo
+```
+
+### Configuration Options
+
+```rust
+use rustic_backend::RestBackend;
+use std::collections::BTreeMap;
+
+let mut options = BTreeMap::new();
+options.insert("retry".to_string(), "5".to_string());
+options.insert("timeout".to_string(), "10m".to_string());
+options.insert("cacert".to_string(), "/path/to/ca.pem".to_string());
+options.insert("tls-client-cert".to_string(), "/path/to/client.pem".to_string());
+
+let backend = RestBackend::new(
+    "https://backup.example.com/repo",
+    options
+)?;
+```
+
+**Options**:
+- `retry` - Retry attempts (`"false"`, `"off"`, `"default"` [5], or a number)
+- `timeout` - Request timeout (e.g., `"10m"`, `"30s"`, `"600"` for seconds)
+- `cacert` - Path to CA certificate file for verifying server
+- `tls-client-cert` - Path to client certificate for mutual TLS
+
+### REST Server Compatibility
+
+The backend is compatible with:
+- [restic REST server](https://github.com/restic/rest-server)
+- [rustic-server](https://github.com/rustic-rs/rustic_server)
+- Any server implementing the restic REST protocol
+
+### Usage Examples
+
+```rust
+use rustic_backend::RestBackend;
+use rustic_core::{ReadBackend, WriteBackend};
+
+// Basic connection
+let backend = RestBackend::new(
+    "https://backup.example.com",
+    vec![]
+)?;
+
+// With authentication
+let backend = RestBackend::new(
+    "https://user:secret@backup.example.com",
+    vec![]
+)?;
+
+// With custom timeout and retry
+let backend = RestBackend::new(
+    "https://backup.example.com",
+    vec![
+        ("timeout".to_string(), "5m".to_string()),
+        ("retry".to_string(), "10".to_string()),
+    ]
+)?;
+
+// Create repository
+backend.create()?;  // Sends POST to /?create=true
+```
+
+## Rclone Backend
+
+Uses [rclone](https://rclone.org/) to access any of the 70+ cloud storage providers that rclone supports.
+
+### Features
+- Access to 70+ cloud providers via rclone
+- Automatic rclone process management
+- Secure authentication with random credentials
+- Automatic REST server detection
+- Version checking for security
+- Passes through all REST backend options
+
+### Repository Format
+
+```
+rclone:remote:path/to/repo
+rclone:gdrive:backup/rustic-repo
+rclone:s3:bucket/repo
+rclone:b2:bucket-name/repo
+```
+
+### Requirements
+
+- rclone >= 1.52.2 installed and in PATH
+- Configured rclone remote
+
+### Configuration Options
+
+```rust
+use rustic_backend::RcloneBackend;
+use std::collections::BTreeMap;
+
+let mut options = BTreeMap::new();
+options.insert(
+    "rclone-command".to_string(),
+    "rclone serve restic --addr localhost:8080".to_string()
+);
+options.insert("use-password".to_string(), "true".to_string());
+
+// Plus any REST backend options
+options.insert("timeout".to_string(), "5m".to_string());
+
+let backend = RcloneBackend::new("remote:path", options)?;
+```
+
+**Options**:
+- `rclone-command` - Custom rclone command (default: `"rclone serve restic --addr localhost:0"`)
+- `use-password` - Enable authentication (default: `true`, requires rclone >= 1.52.2)
+- `rest-url` - Explicit REST URL to use (skips auto-detection)
+- Plus all [REST backend options](#rest-backend)
+
+### How It Works
+
+1. Spawns an rclone process serving the restic REST protocol
+2. Automatically detects the REST server URL from rclone output
+3. Generates random username/password for authentication
+4. Creates a REST backend connected to the rclone server
+5. Cleans up rclone process on drop
+
+### Usage Examples
+
+```rust
+use rustic_backend::RcloneBackend;
+use std::collections::BTreeMap;
+
+// Google Drive
+let backend = RcloneBackend::new(
+    "gdrive:backup/repo",
+    BTreeMap::new()
+)?;
+
+// Backblaze B2
+let backend = RcloneBackend::new(
+    "b2:my-bucket/rustic-backup",
+    BTreeMap::new()
+)?;
+
+// With custom rclone command
+let mut options = BTreeMap::new();
+options.insert(
+    "rclone-command".to_string(),
+    "rclone serve restic --addr 127.0.0.1:9090 --verbose".to_string()
+);
+
+let backend = RcloneBackend::new(
+    "remote:path",
+    options
+)?;
+```
+
+## OpenDAL Backend
+
+Uses [Apache OpenDAL](https://opendal.apache.org/) for access to multiple cloud storage providers.
+
+### Features
+- Support for 40+ storage services
+- Native implementation (no external processes)
+- Retry logic with jitter
+- Connection pooling
+- Bandwidth throttling
+- Concurrent request limiting
+- Parallel directory creation for initialization
+
+### Repository Format
+
+```
+opendal:s3
+opendal:gcs
+opendal:azblob
+opendal:fs
+```
+
+The scheme after `opendal:` determines the storage service. Provider-specific options are passed in the options map.
+
+### Configuration Options
+
+```rust
+use rustic_backend::OpenDALBackend;
+use std::collections::BTreeMap;
+
+let mut options = BTreeMap::new();
+
+// General options
+options.insert("retry".to_string(), "5".to_string());
+options.insert("connections".to_string(), "10".to_string());
+options.insert("throttle".to_string(), "10MB,50MB".to_string());
+
+// S3-specific options
+options.insert("bucket".to_string(), "my-backup-bucket".to_string());
+options.insert("region".to_string(), "us-west-2".to_string());
+options.insert("access_key_id".to_string(), "AKIAIOSFODNN7EXAMPLE".to_string());
+options.insert("secret_access_key".to_string(), "wJalrXUtnFEMI/K7MDENG".to_string());
+
+let backend = OpenDALBackend::new("s3", options)?;
+```
+
+**General Options**:
+- `retry` - Retry attempts (`"false"`, `"off"`, `"default"` [5], or a number)
+- `connections` - Maximum concurrent connections
+- `throttle` - Bandwidth limit (format: `"<bandwidth>,<burst>"`, e.g., `"10MB,50MB"`)
+
+**Throttle Format**:
+- Uses byte size units: `kB`, `MB`, `GB`, `kiB`, `MiB`, `GiB`
+- Format: `"bandwidth,burst"`
+- Example: `"10MB,50MB"` = 10MB/s bandwidth, 50MB burst
+
+### Supported Services
+
+#### Amazon S3
+```rust
+let mut options = BTreeMap::new();
+options.insert("bucket".to_string(), "my-bucket".to_string());
+options.insert("region".to_string(), "us-east-1".to_string());
+options.insert("access_key_id".to_string(), "...".to_string());
+options.insert("secret_access_key".to_string(), "...".to_string());
+
+let backend = OpenDALBackend::new("s3", options)?;
+```
+
+#### Google Cloud Storage
+```rust
+let mut options = BTreeMap::new();
+options.insert("bucket".to_string(), "my-bucket".to_string());
+options.insert("credential".to_string(), "path/to/service-account.json".to_string());
+
+let backend = OpenDALBackend::new("gcs", options)?;
+```
+
+#### Azure Blob Storage
+```rust
+let mut options = BTreeMap::new();
+options.insert("container".to_string(), "my-container".to_string());
+options.insert("account_name".to_string(), "mystorageaccount".to_string());
+options.insert("account_key".to_string(), "...".to_string());
+
+let backend = OpenDALBackend::new("azblob", options)?;
+```
+
+#### Local Filesystem (via OpenDAL)
+```rust
+let mut options = BTreeMap::new();
+options.insert("root".to_string(), "/path/to/repo".to_string());
+
+let backend = OpenDALBackend::new("fs", options)?;
+```
+
+#### Other Supported Services
+
+- **Object Storage**: MinIO, Wasabi, DigitalOcean Spaces, Cloudflare R2
+- **Cloud Providers**: Alibaba Cloud OSS, Tencent Cloud COS, Huawei Cloud OBS
+- **Specialized**: WebDAV, HTTP, IPFS, Redis, Etcd, and many more
+
+See the [OpenDAL documentation](https://opendal.apache.org/docs/category/services) for the complete list and provider-specific options.
+
+### Usage Examples
+
+```rust
+use rustic_backend::OpenDALBackend;
+use std::collections::BTreeMap;
+use rustic_core::{ReadBackend, WriteBackend};
+
+// S3 with throttling
+let mut options = BTreeMap::new();
+options.insert("bucket".to_string(), "backups".to_string());
+options.insert("region".to_string(), "us-west-2".to_string());
+options.insert("throttle".to_string(), "5MB,20MB".to_string());
+options.insert("connections".to_string(), "5".to_string());
+
+let backend = OpenDALBackend::new("s3", options)?;
+backend.create()?;
+
+// Google Cloud Storage
+let mut options = BTreeMap::new();
+options.insert("bucket".to_string(), "my-backups".to_string());
+options.insert("credential".to_string(), "key.json".to_string());
+options.insert("retry".to_string(), "10".to_string());
+
+let backend = OpenDALBackend::new("gcs", options)?;
+```
+
+## Feature Flags
+
+Backend support is controlled by cargo features:
+
+```toml
+[dependencies]
+rustic_backend = { version = "0.1", features = ["opendal", "rclone", "rest"] }
+```
+
+**Default features**: `opendal`, `rclone`, `rest`
+
+- `opendal` - Enables OpenDAL backend
+- `rclone` - Enables Rclone backend
+- `rest` - Enables REST backend
+
+The Local backend is always available.
+
+## Choosing a Backend
+
+### Local
+**Best for**: Local backups, NAS, network-mounted storage
+
+**Pros**:
+- Fastest performance
+- Simplest setup
+- No external dependencies
+- Command hooks for integration
+
+**Cons**:
+- Limited to accessible filesystems
+- No built-in cloud support
+
+### REST
+**Best for**: Self-hosted REST servers, custom server implementations
+
+**Pros**:
+- Simple HTTP protocol
+- Works with existing REST servers
+- Good for self-hosted solutions
+- TLS support
+
+**Cons**:
+- Requires running a server
+- Network latency
+
+### Rclone
+**Best for**: Quick cloud access, many providers, existing rclone configs
+
+**Pros**:
+- 70+ cloud providers
+- Reuses rclone configuration
+- Mature and well-tested
+- Easy cloud migration
+
+**Cons**:
+- External rclone dependency
+- Extra process overhead
+- Slightly slower than native implementations
+
+### OpenDAL
+**Best for**: Production cloud deployments, performance-critical applications
+
+**Pros**:
+- Native implementation
+- Better performance than rclone
+- Advanced features (throttling, connection pooling)
+- No external processes
+
+**Cons**:
+- Fewer providers than rclone
+- Provider-specific configuration
+- More complex setup
+
+## Related Documentation
+
+- [Backend Traits](/api/backend-trait) - Core backend interface
+- [Backend Options](/api/backend-options) - Configuration structure
+- [Repository](/api/repository) - Using backends with repositories

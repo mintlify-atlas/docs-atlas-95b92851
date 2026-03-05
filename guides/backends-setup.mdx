@@ -1,0 +1,553 @@
+---
+title: Backend Setup
+description: Configure storage backends for rustic_core repositories
+---
+
+# Backend Setup
+
+This guide covers how to set up and configure different storage backends for rustic_core, including local storage, cloud storage (S3), REST servers, and rclone.
+
+## Overview
+
+rustic_core supports multiple backend types:
+- **Local** - Store repository on local filesystem
+- **S3** - Amazon S3 and S3-compatible storage
+- **REST** - REST server (rustic-server or restic-server)
+- **Rclone** - Any storage supported by rclone
+- **OpenDAL** - Multiple cloud providers via OpenDAL
+
+## Local Backend
+
+Store repositories on local or network-attached filesystems.
+
+<Steps>
+
+### Basic Local Setup
+
+```rust
+use rustic_backend::BackendOptions;
+use rustic_core::{Repository, RepositoryOptions};
+
+let backends = BackendOptions::default()
+    .repository("/path/to/repo")
+    .to_backends()?;
+
+let repo = Repository::new(&RepositoryOptions::default(), &backends)?;
+```
+
+### With Post-Create/Delete Hooks
+
+Run commands after file operations:
+
+```rust
+let backends = BackendOptions::default()
+    .repository("/path/to/repo")
+    .options(vec![
+        ("post-create-command".to_string(), 
+         "echo 'Created: %file (type=%type, id=%id)'".to_string()),
+        ("post-delete-command".to_string(),
+         "echo 'Deleted: %file'".to_string()),
+    ])
+    .to_backends()?;
+```
+
+### Absolute vs Relative Paths
+
+```rust
+// Absolute path
+let backends = BackendOptions::default()
+    .repository("/backup/repo")
+    .to_backends()?;
+
+// Relative path (relative to current directory)
+let backends = BackendOptions::default()
+    .repository("./local-repo")
+    .to_backends()?;
+
+// Home directory
+let backends = BackendOptions::default()
+    .repository("~/backups/repo")
+    .to_backends()?;
+```
+
+</Steps>
+
+## S3 Backend
+
+Use Amazon S3 or S3-compatible storage (MinIO, Wasabi, etc.).
+
+### AWS S3
+
+```rust
+let backends = BackendOptions::default()
+    .repository("s3:s3.amazonaws.com/my-bucket/repo")
+    .to_backends()?;
+
+// Or with explicit region
+let backends = BackendOptions::default()
+    .repository("s3:s3.us-west-2.amazonaws.com/my-bucket/repo")
+    .to_backends()?;
+```
+
+### S3-Compatible Storage
+
+```rust
+// MinIO
+let backends = BackendOptions::default()
+    .repository("s3:minio.example.com/my-bucket/repo")
+    .options(vec![
+        ("endpoint".to_string(), "http://minio.example.com:9000".to_string()),
+        ("region".to_string(), "us-east-1".to_string()),
+    ])
+    .to_backends()?;
+
+// Wasabi
+let backends = BackendOptions::default()
+    .repository("s3:s3.wasabisys.com/my-bucket/repo")
+    .to_backends()?;
+```
+
+### S3 Authentication
+
+Set credentials via environment variables:
+
+```bash
+# AWS credentials
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+
+# Or use AWS profile
+export AWS_PROFILE=backup-profile
+
+# Session token (if using temporary credentials)
+export AWS_SESSION_TOKEN=your-session-token
+```
+
+### S3 Options
+
+```rust
+let backends = BackendOptions::default()
+    .repository("s3:s3.amazonaws.com/my-bucket/repo")
+    .options(vec![
+        // Storage class
+        ("storage-class".to_string(), "STANDARD_IA".to_string()),
+        
+        // Server-side encryption
+        ("server-side-encryption".to_string(), "AES256".to_string()),
+        
+        // Custom endpoint
+        ("endpoint".to_string(), "https://s3.custom.com".to_string()),
+        
+        // Region
+        ("region".to_string(), "eu-west-1".to_string()),
+        
+        // Path-style URLs (for MinIO, etc.)
+        ("use-path-style".to_string(), "true".to_string()),
+    ])
+    .to_backends()?;
+```
+
+## REST Backend
+
+Connect to a REST server (rustic-server or restic-server).
+
+### Basic REST Setup
+
+```rust
+let backends = BackendOptions::default()
+    .repository("rest:http://localhost:8000/repo")
+    .to_backends()?;
+
+// HTTPS with authentication
+let backends = BackendOptions::default()
+    .repository("rest:https://backup.example.com/my-repo")
+    .to_backends()?;
+```
+
+### REST Authentication
+
+Authentication via environment variables:
+
+```bash
+# Basic auth
+export RUSTIC_REST_USER=username
+export RUSTIC_REST_PASSWORD=password
+
+# Or use .netrc file
+cat ~/.netrc
+machine backup.example.com
+login username
+password secret
+```
+
+### REST with TLS Client Certificates
+
+```bash
+# Client certificate
+export RUSTIC_REST_TLS_CLIENT_CERT=/path/to/cert.pem
+export RUSTIC_REST_TLS_CLIENT_KEY=/path/to/key.pem
+
+# Custom CA certificate
+export RUSTIC_REST_CA_CERT=/path/to/ca.pem
+```
+
+### REST Options
+
+```rust
+let backends = BackendOptions::default()
+    .repository("rest:https://backup.example.com/repo")
+    .options(vec![
+        // Connection timeout
+        ("timeout".to_string(), "300".to_string()),
+        
+        // Number of connections
+        ("connections".to_string(), "5".to_string()),
+        
+        // Retry attempts
+        ("retry".to_string(), "3".to_string()),
+    ])
+    .to_backends()?;
+```
+
+## Rclone Backend
+
+Use rclone to access any storage backend supported by rclone.
+
+### Basic Rclone Setup
+
+```rust
+let backends = BackendOptions::default()
+    .repository("rclone:remote:path/to/repo")
+    .to_backends()?;
+```
+
+### Common Rclone Remotes
+
+```rust
+// Google Drive
+let backends = BackendOptions::default()
+    .repository("rclone:gdrive:backup/repo")
+    .to_backends()?;
+
+// Dropbox
+let backends = BackendOptions::default()
+    .repository("rclone:dropbox:Apps/rustic/repo")
+    .to_backends()?;
+
+// OneDrive
+let backends = BackendOptions::default()
+    .repository("rclone:onedrive:backup/repo")
+    .to_backends()?;
+
+// SFTP
+let backends = BackendOptions::default()
+    .repository("rclone:sftp:backup/repo")
+    .to_backends()?;
+```
+
+### Rclone Configuration
+
+First configure rclone:
+
+```bash
+# Configure rclone remote
+rclone config
+
+# Test the remote
+rclone ls remote:
+```
+
+Then use in rustic_core:
+
+```rust
+let backends = BackendOptions::default()
+    .repository("rclone:myremote:backup/repo")
+    .to_backends()?;
+```
+
+### Rclone Options
+
+```rust
+let backends = BackendOptions::default()
+    .repository("rclone:remote:repo")
+    .options(vec![
+        // Custom rclone config file
+        ("rclone-config".to_string(), "/path/to/rclone.conf".to_string()),
+        
+        // Additional rclone arguments
+        ("rclone-args".to_string(), "--verbose --transfers=10".to_string()),
+        
+        // Connection timeout
+        ("timeout".to_string(), "300".to_string()),
+    ])
+    .to_backends()?;
+```
+
+## OpenDAL Backends
+
+Access multiple cloud providers via OpenDAL.
+
+### Supported OpenDAL Services
+
+```rust
+// Azure Blob Storage
+let backends = BackendOptions::default()
+    .repository("opendal:azblob:container/repo")
+    .options(vec![
+        ("account_name".to_string(), "myaccount".to_string()),
+        ("account_key".to_string(), "key".to_string()),
+    ])
+    .to_backends()?;
+
+// Google Cloud Storage
+let backends = BackendOptions::default()
+    .repository("opendal:gcs:bucket/repo")
+    .to_backends()?;
+
+// And many more...
+```
+
+## Hot/Cold Backend Setup
+
+Combine fast (hot) and slow (cold) storage for optimal performance.
+
+### Local + S3 Hot/Cold
+
+```rust
+let backends = BackendOptions::default()
+    .repository("s3:s3.amazonaws.com/archive/repo")  // Cold storage
+    .repo_hot("/fast/ssd/cache/repo")                // Hot storage
+    .to_backends()?;
+
+let repo = Repository::new(&RepositoryOptions::default(), &backends)?
+    .open(&credentials)?;
+```
+
+### How Hot/Cold Works
+
+- **Tree packs** (metadata) → Hot storage (fast access)
+- **Data packs** (file contents) → Cold storage (cheaper)
+- Automatic synchronization between hot and cold
+
+### Hot/Cold Configuration
+
+```rust
+use rustic_core::ConfigOptions;
+
+// Configure which storage gets what
+let config_opts = ConfigOptions::default();
+    // Tree packs automatically go to hot storage
+    // Data packs go to cold storage
+
+let repo = Repository::new(&repo_opts, &backends)?.init(
+    &credentials,
+    &KeyOptions::default(),
+    &config_opts,
+)?;
+```
+
+## Backend Comparison
+
+### Performance Characteristics
+
+| Backend | Speed | Cost | Reliability | Use Case |
+|---------|-------|------|-------------|----------|
+| Local | Fastest | Low | Medium | Fast backups, local storage |
+| S3 | Fast | Medium | High | Cloud backups, durability |
+| REST | Medium | Low | Medium | Self-hosted, network storage |
+| Rclone | Varies | Varies | Varies | Flexibility, cloud providers |
+
+### Backend Selection Guide
+
+**Choose Local when:**
+- Backing up to external drives
+- Using NAS or network storage
+- Need fastest possible performance
+
+**Choose S3 when:**
+- Need cloud storage with high durability
+- Want automatic replication
+- Require compliance/audit features
+
+**Choose REST when:**
+- Self-hosting backup server
+- Need HTTP-based access
+- Want to use rustic-server
+
+**Choose Rclone when:**
+- Using cloud storage not directly supported
+- Need encryption in transit
+- Want flexibility to change providers
+
+## Common Backend Configurations
+
+### Encrypted Cloud Backup
+
+```rust
+use rustic_core::*;
+
+fn setup_encrypted_s3_backup() -> Result<Repository<Open>, Box<dyn std::error::Error>> {
+    let backends = BackendOptions::default()
+        .repository("s3:s3.amazonaws.com/my-encrypted-backups/repo")
+        .options(vec![
+            ("storage-class".to_string(), "GLACIER_IR".to_string()),
+            ("server-side-encryption".to_string(), "AES256".to_string()),
+        ])
+        .to_backends()?;
+    
+    let repo_opts = RepositoryOptions::default()
+        .cache_dir(Some(PathBuf::from("/fast/cache")));
+    
+    let repo = Repository::new(&repo_opts, &backends)?
+        .open(&Credentials::password("strong-password"))?
+        .to_indexed()?;
+    
+    Ok(repo)
+}
+```
+
+### Multi-Location Backup
+
+```rust
+fn backup_to_multiple_locations(source: &PathList, snap: SnapshotFile) 
+    -> Result<(), Box<dyn std::error::Error>> 
+{
+    let locations = vec![
+        "/local/backup/repo",
+        "s3:s3.amazonaws.com/cloud-backup/repo",
+    ];
+    
+    for location in locations {
+        let backends = BackendOptions::default()
+            .repository(location)
+            .to_backends()?;
+        
+        let repo = Repository::new(&RepositoryOptions::default(), &backends)?
+            .open(&Credentials::password("password"))?
+            .to_indexed_ids()?;
+        
+        repo.backup(&BackupOptions::default(), source, snap.clone())?;
+        println!("Backed up to: {}", location);
+    }
+    
+    Ok(())
+}
+```
+
+### Hybrid Hot/Cold Setup
+
+```rust
+fn setup_hybrid_storage() -> Result<Repository<Open>, Box<dyn std::error::Error>> {
+    // Fast local SSD for metadata (hot)
+    // Slow S3 Glacier for data (cold)
+    let backends = BackendOptions::default()
+        .repository("s3:s3.amazonaws.com/glacier-archive/repo")
+        .repo_hot("/mnt/nvme/hot-cache/repo")
+        .to_backends()?;
+    
+    let repo_opts = RepositoryOptions::default()
+        .warm_up(true);  // Prefetch from cold storage
+    
+    let repo = Repository::new(&repo_opts, &backends)?
+        .open(&credentials)?;
+    
+    Ok(repo)
+}
+```
+
+## Backend Best Practices
+
+### Security
+
+```rust
+// ✅ Good: Use environment variables for credentials
+let backends = BackendOptions::default()
+    .repository("s3:s3.amazonaws.com/bucket/repo")
+    .to_backends()?;
+// Credentials from AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+
+// ❌ Bad: Hardcode credentials
+let backends = BackendOptions::default()
+    .repository("s3:AKIAIOSFODNN7EXAMPLE:secret@s3.amazonaws.com/bucket/repo")
+    .to_backends()?;
+```
+
+### Reliability
+
+```rust
+// Use repository verification
+let repo = Repository::new(&repo_opts, &backends)?
+    .open(&credentials)?;
+
+let check_opts = CheckOptions::default()
+    .read_data(true)
+    .read_data_subset(ReadSubsetOption::Percentage(5.0));
+
+repo.check(check_opts)?.is_ok()?;
+```
+
+### Performance
+
+```rust
+// Enable caching for remote backends
+let repo_opts = RepositoryOptions::default()
+    .cache_dir(Some(PathBuf::from("/fast/ssd/cache")))
+    .warm_up(true);  // Prefetch data packs
+
+// Increase connection pooling for cloud storage
+let backends = BackendOptions::default()
+    .repository("s3:s3.amazonaws.com/bucket/repo")
+    .options(vec![
+        ("connections".to_string(), "10".to_string()),
+    ])
+    .to_backends()?;
+```
+
+## Troubleshooting
+
+### Connection Issues
+
+```rust
+// Test backend connectivity
+match backends.repository().create() {
+    Ok(_) => println!("Backend is accessible"),
+    Err(e) => eprintln!("Cannot access backend: {}", e),
+}
+```
+
+### Credential Problems
+
+```bash
+# Verify S3 credentials
+aws s3 ls s3://my-bucket/
+
+# Test rclone remote
+rclone ls remote:
+
+# Check REST server
+curl -u user:pass https://backup.example.com/
+```
+
+### Performance Issues
+
+```rust
+// Enable connection pooling
+let backends = BackendOptions::default()
+    .repository("rest:https://backup.example.com/repo")
+    .options(vec![
+        ("connections".to_string(), "10".to_string()),
+        ("retry".to_string(), "5".to_string()),
+    ])
+    .to_backends()?;
+
+// Use local cache
+let repo_opts = RepositoryOptions::default()
+    .cache_dir(Some(PathBuf::from("/fast/cache")));
+```
+
+## See Also
+
+- [Configuration Guide](/guides/configuration) - Repository configuration
+- [Backup Guide](/guides/backup) - Using configured backends
+- [Repository Management](/guides/repository-management) - Maintenance operations
+- [BackendOptions API Reference](/api/backend-options)

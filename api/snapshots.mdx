@@ -1,0 +1,367 @@
+---
+title: "Snapshots"
+description: "Manage and query backup snapshots"
+---
+
+Snapshots represent point-in-time backups in rustic. They contain metadata about what was backed up, when, and by whom.
+
+## SnapshotFile
+
+Represents snapshot metadata stored in the repository.
+
+```rust
+pub struct SnapshotFile {
+    pub time: Zoned,
+    pub program_version: String,
+    pub parent: Option<SnapshotId>,
+    pub parents: Vec<SnapshotId>,
+    pub tree: TreeId,
+    pub label: String,
+    pub paths: StringList,
+    pub hostname: String,
+    pub username: String,
+    pub uid: u32,
+    pub gid: u32,
+    pub tags: StringList,
+    pub original: Option<SnapshotId>,
+    pub delete: DeleteOption,
+    pub summary: Option<SnapshotSummary>,
+    pub description: Option<String>,
+    pub id: SnapshotId,
+}
+```
+
+### Fields
+
+<ParamField path="time" type="Zoned">
+  Timestamp when the snapshot was created.
+</ParamField>
+
+<ParamField path="program_version" type="String">
+  Program identifier and version used to create the snapshot.
+</ParamField>
+
+<ParamField path="parent" type="Option<SnapshotId>">
+  The ID of the first parent snapshot this was based on.
+</ParamField>
+
+<ParamField path="parents" type="Vec<SnapshotId>">
+  All parent snapshot IDs this snapshot was based on.
+</ParamField>
+
+<ParamField path="tree" type="TreeId">
+  The tree blob ID where the snapshot contents are stored.
+</ParamField>
+
+<ParamField path="label" type="String">
+  User-defined label for the snapshot.
+</ParamField>
+
+<ParamField path="paths" type="StringList">
+  List of paths contained in this snapshot.
+</ParamField>
+
+<ParamField path="hostname" type="String">
+  Hostname of the device where the snapshot was created.
+</ParamField>
+
+<ParamField path="username" type="String">
+  Username that started the backup.
+</ParamField>
+
+<ParamField path="uid" type="u32">
+  User ID of the user that started the backup.
+</ParamField>
+
+<ParamField path="gid" type="u32">
+  Group ID of the user that started the backup.
+</ParamField>
+
+<ParamField path="tags" type="StringList">
+  List of tags for categorizing the snapshot.
+</ParamField>
+
+<ParamField path="original" type="Option<SnapshotId>">
+  Original snapshot ID if this snapshot is a modified version.
+</ParamField>
+
+<ParamField path="delete" type="DeleteOption">
+  Deletion protection settings.
+</ParamField>
+
+<ParamField path="summary" type="Option<SnapshotSummary>">
+  Summary statistics about the backup operation.
+</ParamField>
+
+<ParamField path="description" type="Option<String>">
+  User-provided description of the snapshot contents.
+</ParamField>
+
+<ParamField path="id" type="SnapshotId">
+  The unique identifier of this snapshot.
+</ParamField>
+
+## SnapshotOptions
+
+Options for creating a new snapshot.
+
+<ParamField path="label" type="Option<String>">
+  Label for the snapshot.
+</ParamField>
+
+<ParamField path="tags" type="Vec<StringList>">
+  Tags to add to the snapshot (can be specified multiple times).
+</ParamField>
+
+<ParamField path="description" type="Option<String>">
+  Description of what the snapshot contains.
+</ParamField>
+
+<ParamField path="description_from" type="Option<PathBuf>">
+  Read description from a file. Conflicts with `description`.
+</ParamField>
+
+<ParamField path="time" type="Option<Zoned>">
+  Set the backup time manually (e.g., "2021-01-21 14:15:23+0000").
+</ParamField>
+
+<ParamField path="delete_never" type="bool" default={false}>
+  Mark snapshot as uneraseable. Conflicts with `delete_after`.
+</ParamField>
+
+<ParamField path="delete_after" type="Option<Span>">
+  Mark snapshot to be deleted after given duration (e.g., "10d").
+</ParamField>
+
+<ParamField path="host" type="Option<String>">
+  Set the hostname manually.
+</ParamField>
+
+<ParamField path="command" type="Option<String>">
+  Set the backup command manually.
+</ParamField>
+
+## DeleteOption
+
+Options for snapshot deletion protection.
+
+```rust
+pub enum DeleteOption {
+    NotSet,
+    Never,
+    After(Zoned),
+}
+```
+
+<ParamField path="NotSet">
+  No deletion protection set.
+</ParamField>
+
+<ParamField path="Never">
+  Snapshot should never be deleted (remove-protection).
+</ParamField>
+
+<ParamField path="After(Zoned)">
+  Remove snapshot after the given timestamp, but prevent removing before.
+</ParamField>
+
+## SnapshotSummary
+
+Summary information about a snapshot.
+
+<ParamField path="files_new" type="u64">
+  New files compared to parent snapshot.
+</ParamField>
+
+<ParamField path="files_changed" type="u64">
+  Changed files compared to parent snapshot.
+</ParamField>
+
+<ParamField path="files_unmodified" type="u64">
+  Unchanged files compared to parent snapshot.
+</ParamField>
+
+<ParamField path="total_files_processed" type="u64">
+  Total files processed during backup.
+</ParamField>
+
+<ParamField path="total_bytes_processed" type="u64">
+  Total size of all processed files.
+</ParamField>
+
+<ParamField path="dirs_new" type="u64">
+  New directories compared to parent.
+</ParamField>
+
+<ParamField path="dirs_changed" type="u64">
+  Changed directories compared to parent.
+</ParamField>
+
+<ParamField path="dirs_unmodified" type="u64">
+  Unchanged directories compared to parent.
+</ParamField>
+
+<ParamField path="data_blobs" type="u64">
+  Total data blobs added by this snapshot.
+</ParamField>
+
+<ParamField path="tree_blobs" type="u64">
+  Total tree blobs added by this snapshot.
+</ParamField>
+
+<ParamField path="data_added" type="u64">
+  Total uncompressed bytes added.
+</ParamField>
+
+<ParamField path="data_added_packed" type="u64">
+  Total bytes added to repository (compressed/encrypted).
+</ParamField>
+
+<ParamField path="backup_start" type="Zoned">
+  When the backup started.
+</ParamField>
+
+<ParamField path="backup_end" type="Zoned">
+  When the backup finished.
+</ParamField>
+
+<ParamField path="backup_duration" type="f64">
+  Duration of backup in seconds.
+</ParamField>
+
+## Listing Snapshots
+
+### SnapshotFile::latest()
+
+Get the latest snapshot matching a filter.
+
+```rust
+pub fn latest<F>(
+    be: &impl DecryptReadBackend,
+    filter: F,
+    p: &Progress,
+) -> RusticResult<SnapshotFile>
+where
+    F: FnMut(&SnapshotFile) -> bool,
+```
+
+### SnapshotFile::from_strs()
+
+Get snapshots from string identifiers.
+
+```rust
+pub fn from_strs<F>(
+    be: &impl DecryptReadBackend,
+    ids: &[String],
+    filter: F,
+    p: &Progress,
+) -> RusticResult<Vec<SnapshotFile>>
+where
+    F: FnMut(&SnapshotFile) -> bool,
+```
+
+Supports:
+- Full snapshot IDs
+- Short IDs (prefix matching)
+- `"latest"` for most recent snapshot
+- `"latest~N"` for Nth most recent snapshot (N >= 0)
+
+## Filtering Snapshots
+
+Snapshots can be filtered by:
+- **Host**: Filter by hostname
+- **Label**: Filter by label
+- **Paths**: Filter by backup paths
+- **Tags**: Filter by tags
+- **Time range**: Filter by creation time
+
+Use `SnapshotGroupCriterion` to group snapshots:
+
+```rust
+pub enum SnapshotGroupCriterion {
+    Host,
+    Label,
+    Paths,
+    Tags,
+}
+```
+
+## Example
+
+```rust
+use rustic_core::{
+    DeleteOption,
+    SnapshotFile,
+    SnapshotOptions,
+};
+use jiff::Span;
+
+// Create snapshot with options
+let opts = SnapshotOptions {
+    label: Some("daily-backup".to_string()),
+    tags: vec!["important".parse()?, "production".parse()?],
+    description: Some("Database backup".to_string()),
+    delete_after: Some(Span::new().days(30)),
+    ..Default::default()
+};
+
+let snapshot = opts.to_snapshot()?;
+
+// List all snapshots
+let snapshots = repo.get_all_snapshots()?;
+
+for snap in snapshots {
+    println!("Snapshot {} created at {}", snap.id, snap.time);
+    println!("  Paths: {:?}", snap.paths);
+    println!("  Tags: {:?}", snap.tags);
+}
+
+// Get latest snapshot for a specific host
+let latest = SnapshotFile::latest(
+    repo.dbe(),
+    |snap| snap.hostname == "myserver",
+    &repo.progress_counter(""),
+)?;
+
+println!("Latest snapshot: {}", latest.id);
+
+// Get snapshot by ID or prefix
+let snapshots = SnapshotFile::from_strs(
+    repo.dbe(),
+    &["abc123".to_string(), "latest".to_string()],
+    |_| true,
+    &repo.progress_counter(""),
+)?;
+```
+
+## Snapshot Protection
+
+### Never Delete
+
+```rust
+let opts = SnapshotOptions {
+    delete_never: true,
+    ..Default::default()
+};
+```
+
+### Delete After Duration
+
+```rust
+use jiff::Span;
+
+let opts = SnapshotOptions {
+    delete_after: Some(Span::new().days(90)),
+    ..Default::default()
+};
+```
+
+## Notes
+
+- Snapshots are immutable once created
+- Snapshot IDs are content-addressed (deterministic based on metadata)
+- Parent snapshots enable incremental backups
+- Tags and labels help organize and find snapshots
+- Deletion protection prevents accidental data loss
+- Snapshots can be compared and filtered by multiple criteria
+- The `summary` field contains detailed statistics about what was backed up

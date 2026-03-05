@@ -1,0 +1,232 @@
+---
+title: Installation
+description: Add rustic_core to your Rust project
+---
+
+## Requirements
+
+### Rust Version
+
+rustic_core requires **Rust 1.88.0** or newer.
+
+<Note>
+The minimum supported Rust version (MSRV) may increase in minor version updates. For example, rustic_core 0.10.x requires Rust 1.88.0, but rustic_core 0.11.0 may require a newer version.
+</Note>
+
+Check your Rust version:
+
+```bash
+rustc --version
+```
+
+Update Rust if needed:
+
+```bash
+rustup update stable
+```
+
+## Adding to Your Project
+
+### Basic Installation
+
+Add rustic_core to your `Cargo.toml`:
+
+```toml
+[dependencies]
+rustic_core = "0"
+```
+
+This installs the latest 0.x version with default features (no optional features enabled).
+
+### With Specific Version
+
+For more control over version updates:
+
+```toml
+[dependencies]
+rustic_core = "0.10"
+```
+
+### Backend Support
+
+rustic_core requires a backend implementation for storage. Add rustic_backend as well:
+
+```toml
+[dependencies]
+rustic_core = "0"
+rustic_backend = "0"
+```
+
+The backend crate provides support for:
+- Local filesystem storage
+- REST servers
+- Various cloud storage providers
+
+## Feature Flags
+
+rustic_core provides optional features to reduce dependencies for your use case.
+
+### Available Features
+
+<AccordionGroup>
+  <Accordion title="cli" icon="terminal">
+    Enables CLI-related functionality by enabling both `merge` and `clap` features.
+    
+    **Use when**: Building command-line applications
+    
+    ```toml
+    [dependencies]
+    rustic_core = { version = "0", features = ["cli"] }
+    ```
+    
+    This enables:
+    - Command-line argument parsing with clap
+    - Configuration merging with conflate
+  </Accordion>
+  
+  <Accordion title="merge" icon="code-merge">
+    Enables support for merging multiple configuration sources.
+    
+    **Use when**: You need to combine configuration from files, environment variables, and command-line arguments
+    
+    ```toml
+    [dependencies]
+    rustic_core = { version = "0", features = ["merge"] }
+    ```
+    
+    **Adds dependency**: `conflate` for configuration merging
+  </Accordion>
+  
+  <Accordion title="clap" icon="terminal">
+    Enables command-line argument parsing.
+    
+    **Use when**: Building CLI tools but not needing full `cli` feature
+    
+    ```toml
+    [dependencies]
+    rustic_core = { version = "0", features = ["clap"] }
+    ```
+    
+    **Adds dependency**: `clap` with derive, env, and wrap_help features
+  </Accordion>
+</AccordionGroup>
+
+### Default Features
+
+By default, **no optional features are enabled**. This keeps the dependency tree minimal for library use.
+
+```toml
+# These are equivalent:
+rustic_core = "0"
+rustic_core = { version = "0", default-features = false }
+```
+
+### Multiple Features
+
+Enable multiple features as needed:
+
+```toml
+[dependencies]
+rustic_core = { version = "0", features = ["clap", "merge"] }
+```
+
+<Tip>
+For CLI applications, use the `cli` feature which includes everything you need. For libraries or custom integrations, start with no features and add only what you need.
+</Tip>
+
+## Core Dependencies
+
+When you add rustic_core, you'll get these key dependencies:
+
+### Cryptography
+- `aes256ctr_poly1305aes` - AES-256-CTR encryption with Poly1305 authentication
+- `scrypt` - Key derivation from passwords
+- `sha2` - SHA-256 hashing (with assembly optimizations on supported platforms)
+
+### Serialization
+- `serde` - Serialization framework
+- `serde_json` - JSON support for repository metadata
+- `binrw` - Binary serialization for pack files
+
+### Parallelization
+- `rayon` - Data parallelism
+- `crossbeam-channel` - Multi-producer multi-consumer channels
+- `pariter` - Parallel iteration utilities
+
+### Compression & Deduplication
+- `zstd` - Zstandard compression
+- `rustic_cdc` - Content-defined chunking for deduplication
+
+### File System Operations
+- `walkdir` - Directory traversal
+- `ignore` - Gitignore-style pattern matching
+- `xattr` - Extended file attributes (Unix/Linux)
+
+<Info>
+The full dependency list is available in the [Cargo.toml](https://github.com/rustic-rs/rustic_core/blob/main/crates/core/Cargo.toml) on GitHub.
+</Info>
+
+## Platform Support
+
+rustic_core supports:
+
+- **Linux** - Full support including extended attributes and ACLs
+- **macOS** - Full support with xattr
+- **Windows** - Full support (SHA2 assembly optimizations disabled due to upstream issues)
+- **OpenBSD** - Supported (without xattr)
+
+<Warning>
+On Windows, SHA-256 assembly optimizations are disabled due to compatibility issues. This may result in slightly slower hashing performance.
+</Warning>
+
+## Verification
+
+Verify your installation by building a simple example:
+
+```rust
+use rustic_core::{Repository, RepositoryOptions};
+use rustic_backend::BackendOptions;
+
+fn main() {
+    println!("rustic_core is installed!");
+}
+```
+
+Build and run:
+
+```bash
+cargo build
+cargo run
+```
+
+If you see "rustic_core is installed!", you're ready to go!
+
+## Additional Tools
+
+### For Logging
+
+Many examples use `simplelog` for output:
+
+```toml
+[dependencies]
+rustic_core = "0"
+rustic_backend = "0"
+simplelog = "0.12"
+```
+
+### For Error Handling
+
+Consider using `anyhow` for easier error handling:
+
+```toml
+[dependencies]
+rustic_core = "0"
+rustic_backend = "0"
+anyhow = "1"
+```
+
+## Next Steps
+
+<Card title="Quick Start Guide" icon="rocket" href="/quickstart">
+  Learn how to initialize a repository and create your first backup
+</Card>

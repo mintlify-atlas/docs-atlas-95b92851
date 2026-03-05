@@ -1,0 +1,222 @@
+---
+title: "Check"
+description: "Verify repository integrity and validate data consistency"
+---
+
+The check operation verifies the integrity of the repository, ensuring all data is consistent and accessible.
+
+## check_repository()
+
+Runs a comprehensive check on the repository.
+
+```rust
+pub fn check_repository<S: Open>(
+    repo: &Repository<S>,
+    opts: CheckOptions,
+    trees: Vec<TreeId>,
+) -> RusticResult<CheckResults>
+```
+
+### Parameters
+
+- `repo`: The repository to check
+- `opts`: Check options
+- `trees`: List of tree IDs to check
+
+### Returns
+
+Returns `CheckResults` containing any errors or warnings found.
+
+### Errors
+
+- If the repository is corrupted
+- If data validation fails
+
+## CheckOptions
+
+Configuration options for the check operation.
+
+<ParamField path="trust_cache" type="bool" default={false}>
+  Don't verify the data saved in the cache. Conflicts with `no_cache`.
+</ParamField>
+
+<ParamField path="read_data" type="bool" default={false}>
+  Also read and check pack files (thorough check).
+</ParamField>
+
+<ParamField path="read_data_subset" type="ReadSubsetOption" default="all">
+  Read only a subset of the data. Allowed values:
+  - `"all"`: Read all pack files
+  - `"n/m"`: Read specific part (e.g., "1/5" for first fifth)
+  - `"x%"`: Random subset by percentage (e.g., "10%")
+  - Size value: Random subset by size (e.g., "250MiB")
+  
+  Requires `read_data` to be enabled.
+</ParamField>
+
+## ReadSubsetOption
+
+Specifies which subset of packs to read during check.
+
+```rust
+pub enum ReadSubsetOption {
+    All,
+    Percentage(f64),
+    Size(u64),
+    IdSubSet((u32, u32)),
+}
+```
+
+### Variants
+
+<ParamField path="All">
+  Read all pack files.
+</ParamField>
+
+<ParamField path="Percentage(f64)">
+  Read a random subset with approximately the given percentage of total size.
+</ParamField>
+
+<ParamField path="Size(u64)">
+  Read a random subset with approximately the given size in bytes.
+</ParamField>
+
+<ParamField path="IdSubSet((u32, u32))">
+  Read a subset based on pack IDs: using (1,n) .. (n,n) in separate runs covers all packs.
+</ParamField>
+
+## CheckResults
+
+Results from a check operation.
+
+```rust
+pub struct CheckResults(pub Vec<(CheckErrorLevel, CheckError)>);
+```
+
+### Methods
+
+#### is_ok()
+
+Returns whether severe errors were found.
+
+```rust
+pub fn is_ok(&self) -> RusticResult<()>
+```
+
+Returns an error if there are items with `CheckErrorLevel::Error`.
+
+## CheckErrorLevel
+
+Severity levels of problems identified by check.
+
+```rust
+pub enum CheckErrorLevel {
+    Warn,
+    Error,
+}
+```
+
+<ParamField path="Warn">
+  A warning: Something is strange and should be corrected, but repository integrity is not affected.
+</ParamField>
+
+<ParamField path="Error">
+  An error: Something in the repository is not as it should be.
+</ParamField>
+
+## CheckError
+
+Describes specific errors found during check operations.
+
+Common error types include:
+
+- **Pack errors**: Missing packs, size mismatches, hash mismatches
+- **Index errors**: Duplicate packs, inconsistent index data
+- **Blob errors**: Missing blobs, incorrect blob references
+- **Tree errors**: Missing or invalid directory trees
+- **Cache errors**: Mismatched cache data
+
+## Example
+
+```rust
+use rustic_core::{
+    CheckOptions,
+    ReadSubsetOption,
+    Repository,
+};
+
+// Basic check (metadata only)
+let opts = CheckOptions::default();
+let results = check_repository(&repo, opts, vec![])?;
+
+if let Err(e) = results.is_ok() {
+    eprintln!("Check found errors: {}", e);
+}
+
+// Thorough check with data verification
+let opts = CheckOptions {
+    trust_cache: false,
+    read_data: true,
+    read_data_subset: ReadSubsetOption::All,
+};
+
+let results = check_repository(&repo, opts, vec![])?;
+
+for (level, error) in &results.0 {
+    match level {
+        CheckErrorLevel::Error => eprintln!("ERROR: {}", error),
+        CheckErrorLevel::Warn => println!("WARNING: {}", error),
+    }
+}
+
+results.is_ok()?;
+println!("Repository check passed!");
+```
+
+## Check Types
+
+### Metadata Check (Fast)
+
+Without `read_data`, check verifies:
+- Index file consistency
+- Pack file existence and sizes
+- Snapshot metadata
+- Tree structure references
+- Cache consistency (unless `trust_cache` is set)
+
+### Data Check (Thorough)
+
+With `read_data`, check additionally:
+- Reads and verifies pack file contents
+- Validates blob checksums
+- Verifies compression and encryption
+- Checks pack headers
+
+### Partial Data Check
+
+Use `read_data_subset` to check a portion of data:
+
+```rust
+// Check 10% of data randomly
+let opts = CheckOptions {
+    read_data: true,
+    read_data_subset: ReadSubsetOption::Percentage(10.0),
+    ..Default::default()
+};
+
+// Check specific subset (useful for distributed checking)
+let opts = CheckOptions {
+    read_data: true,
+    read_data_subset: ReadSubsetOption::IdSubSet((1, 5)),
+    ..Default::default()
+};
+```
+
+## Notes
+
+- Regular checks help detect corruption early
+- Metadata checks are fast and can run frequently
+- Full data checks are thorough but slower
+- Use subset checking for large repositories
+- Check validates both hot and cold storage in hot/cold repositories
+- Cache verification ensures cached data matches backend data

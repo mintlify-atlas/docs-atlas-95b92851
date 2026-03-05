@@ -1,0 +1,445 @@
+---
+title: Repository Management
+description: Learn how to maintain and manage rustic_core repositories
+---
+
+# Repository Management
+
+This guide covers essential repository maintenance operations including checking repository integrity, pruning old data, and repairing issues.
+
+## Overview
+
+Proper repository maintenance ensures:
+- Data integrity and consistency
+- Efficient storage usage
+- Fast backup and restore operations
+- Long-term repository health
+
+## Check Repository
+
+The `check` command verifies repository integrity by validating snapshots, index files, and pack files.
+
+<Steps>
+
+### Basic Check
+
+Perform a basic repository check:
+
+```rust
+use rustic_core::{Repository, RepositoryOptions, CheckOptions, Credentials};
+use rustic_backend::BackendOptions;
+
+let backends = BackendOptions::default()
+    .repository("/path/to/repo")
+    .to_backends()?;
+
+let repo = Repository::new(&RepositoryOptions::default(), &backends)?
+    .open(&Credentials::password("password"))?;
+
+let opts = CheckOptions::default();
+let results = repo.check(opts)?;
+
+// Check if errors were found
+results.is_ok()?;
+```
+
+### Check with Data Verification
+
+Read and verify pack file contents:
+
+```rust
+let opts = CheckOptions::default()
+    .read_data(true)  // Verify pack file contents
+    .read_data_subset(ReadSubsetOption::Percentage(10.0)); // Check 10% of data
+
+let results = repo.check(opts)?;
+```
+
+### Trust Cache
+
+Skip cache verification for faster checks:
+
+```rust
+let opts = CheckOptions::default().trust_cache(true);
+let results = repo.check(opts)?;
+```
+
+</Steps>
+
+## Check Options
+
+See `/home/daytona/workspace/source/crates/core/src/commands/check.rs:183-203`
+
+### Read Data Subsets
+
+```rust
+use rustic_core::ReadSubsetOption;
+
+// Check all pack files (slow, thorough)
+let opts = CheckOptions::default()
+    .read_data(true)
+    .read_data_subset(ReadSubsetOption::All);
+
+// Check 25% of pack files (random sample)
+let opts = CheckOptions::default()
+    .read_data(true)
+    .read_data_subset(ReadSubsetOption::Percentage(25.0));
+
+// Check specific size of data
+let opts = CheckOptions::default()
+    .read_data(true)
+    .read_data_subset(ReadSubsetOption::Size(1_000_000_000)); // 1 GB
+
+// Check specific subset by ID
+let opts = CheckOptions::default()
+    .read_data(true)
+    .read_data_subset(ReadSubsetOption::IdSubSet((1, 5))); // 1st of 5 parts
+```
+
+### Time-Based Subset Checking
+
+```rust
+// Check different subsets on different schedules
+let subset = ReadSubsetOption::from_str("hourly/day")?;  // Different hour each day
+let subset = ReadSubsetOption::from_str("daily/week")?;  // Different day each week  
+let subset = ReadSubsetOption::from_str("weekly/month")?; // Different week each month
+let subset = ReadSubsetOption::from_str("monthly/year")?; // Different month each year
+
+let opts = CheckOptions::default()
+    .read_data(true)
+    .read_data_subset(subset);
+```
+
+## Prune Repository
+
+Pruning removes unused data and optimizes repository storage.
+
+<Steps>
+
+### Create Prune Plan
+
+First, create a plan to see what will be done:
+
+```rust
+use rustic_core::PruneOptions;
+
+let prune_opts = PruneOptions::default();
+let plan = repo.prune_plan(&prune_opts)?;
+
+// Review statistics
+println!("Prune Plan Statistics:");
+println!("Packs to delete: {}", plan.stats.packs_to_delete.remove);
+println!("Packs to repack: {}", plan.stats.packs.repack);
+println!("Packs to keep: {}", plan.stats.packs.keep);
+println!("Size to delete: {} bytes", plan.stats.size_to_delete.remove);
+```
+
+### Execute Prune
+
+Execute the prune plan:
+
+```rust
+// Execute the prune plan
+repo.prune(&prune_opts, plan)?;
+```
+
+</Steps>
+
+## Prune Options
+
+See `/home/daytona/workspace/source/crates/core/src/commands/prune.rs:52-134`
+
+### Repack Limits
+
+```rust
+use rustic_core::LimitOption;
+
+// Limit repacking to 5% of repository size
+let opts = PruneOptions::default()
+    .max_repack(LimitOption::Percentage(5));
+
+// Limit repacking to specific size
+let opts = PruneOptions::default()
+    .max_repack(LimitOption::Size(ByteSize::gb(2)));
+
+// No limit on repacking
+let opts = PruneOptions::default()
+    .max_repack(LimitOption::Unlimited);
+```
+
+### Maximum Unused Data
+
+```rust
+// Tolerate up to 10% unused data
+let opts = PruneOptions::default()
+    .max_unused(LimitOption::Percentage(10));
+
+// Tolerate up to 1 GB unused data  
+let opts = PruneOptions::default()
+    .max_unused(LimitOption::Size(ByteSize::gb(1)));
+```
+
+### Pack Retention
+
+```rust
+use jiff::Span;
+
+// Keep packs at least 7 days before repacking
+let opts = PruneOptions::default()
+    .keep_pack(Span::new().days(7));
+
+// Keep packs marked for deletion for 24 hours before removing
+let opts = PruneOptions::default()
+    .keep_delete(Span::new().hours(24));
+```
+
+### Instant Delete
+
+```rust
+// Delete files immediately instead of marking them
+// WARNING: Only use if no parallel processes access the repository!
+let opts = PruneOptions::default()
+    .instant_delete(true)
+    .early_delete_index(true); // Delete index files early to save space
+```
+
+### Repack Strategies
+
+```rust
+// Repack all packs (maximum compression)
+let opts = PruneOptions::default().repack_all(true);
+
+// Repack only uncompressed blobs (for v2 repos)
+let opts = PruneOptions::default().repack_uncompressed(true);
+
+// Fast repacking (copy blobs without re-encrypting)
+let opts = PruneOptions::default().fast_repack(true);
+
+// Only repack cacheable packs (for hot/cold repos)
+let opts = PruneOptions::default()
+    .repack_cacheable_only(Some(true));
+
+// Don't resize packs, only remove unused data
+let opts = PruneOptions::default().no_resize(true);
+```
+
+## Repair Operations
+
+### Repair Index
+
+Repair corrupted or missing index files:
+
+```rust
+use rustic_core::RepairIndexOptions;
+
+let repair_opts = RepairIndexOptions::default()
+    .read_all(true); // Read all pack files to rebuild index
+
+repo.repair_index(&repair_opts)?;
+```
+
+### Repair Snapshots
+
+Repair or delete broken snapshots:
+
+```rust
+use rustic_core::RepairSnapshotsOptions;
+
+// Repair snapshots by removing broken entries
+let repair_opts = RepairSnapshotsOptions::default();
+repo.repair_snapshots(&repair_opts)?;
+```
+
+### Repair Hot/Cold Repository
+
+For hot/cold backend setups:
+
+```rust
+// Repair hot/cold repository consistency
+repo.repair_hotcold()?;
+
+// Repair specific packs in hot storage
+repo.repair_hotcold_packs(&pack_ids)?;
+```
+
+## Repository Information
+
+### Get Repository Statistics
+
+```rust
+// Get index information
+let index_infos = repo.infos_index()?;
+println!("Index files: {}", index_infos.len());
+
+// Get file statistics  
+let file_infos = repo.infos_files()?;
+println!("Total snapshots: {}", file_infos.snapshots);
+println!("Total pack files: {}", file_infos.packs);
+println!("Total size: {} bytes", file_infos.total_size);
+```
+
+## Maintenance Best Practices
+
+### Regular Check Schedule
+
+```rust
+// Daily: Quick check without data verification
+let daily_opts = CheckOptions::default().trust_cache(true);
+repo.check(daily_opts)?;
+
+// Weekly: Check 10% of data
+let weekly_opts = CheckOptions::default()
+    .read_data(true)
+    .read_data_subset(ReadSubsetOption::Percentage(10.0));
+repo.check(weekly_opts)?;
+
+// Monthly: Full data verification
+let monthly_opts = CheckOptions::default()
+    .read_data(true)
+    .read_data_subset(ReadSubsetOption::All);
+repo.check(monthly_opts)?;
+```
+
+### Prune After Forget
+
+Always prune after deleting snapshots:
+
+```rust
+use rustic_core::SnapshotFilter;
+
+// Delete old snapshots
+let filter = SnapshotFilter::default()
+    .keep_daily(7)
+    .keep_weekly(4)
+    .keep_monthly(6);
+
+repo.forget(&filter)?;
+
+// Prune to reclaim space
+let prune_opts = PruneOptions::default();
+let plan = repo.prune_plan(&prune_opts)?;
+repo.prune(&prune_opts, plan)?;
+```
+
+### Verify Before Important Operations
+
+```rust
+// Always check before major operations
+fn safe_prune(repo: &Repository<Open>) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Check repository integrity
+    println!("Checking repository...");
+    let check_opts = CheckOptions::default()
+        .read_data(true)
+        .read_data_subset(ReadSubsetOption::Percentage(5.0));
+    repo.check(check_opts)?.is_ok()?;
+    
+    // 2. Create prune plan
+    println!("Creating prune plan...");
+    let prune_opts = PruneOptions::default();
+    let plan = repo.prune_plan(&prune_opts)?;
+    
+    // 3. Review plan
+    println!("Will delete {} packs", plan.stats.packs_to_delete.remove);
+    println!("Will repack {} packs", plan.stats.packs.repack);
+    
+    // 4. Execute prune
+    println!("Executing prune...");
+    repo.prune(&prune_opts, plan)?;
+    
+    // 5. Verify after prune
+    println!("Verifying repository...");
+    repo.check(check_opts)?.is_ok()?;
+    
+    println!("Prune completed successfully!");
+    Ok(())
+}
+```
+
+### Monitor Repository Growth
+
+```rust
+use rustic_core::BlobType;
+
+fn analyze_repository(repo: &Repository<Open>) -> Result<(), Box<dyn std::error::Error>> {
+    let prune_opts = PruneOptions::default();
+    let plan = repo.prune_plan(&prune_opts)?;
+    
+    let stats = plan.stats;
+    let size_sum = stats.size_sum();
+    
+    println!("Repository Analysis:");
+    println!("Total size: {} bytes", size_sum.total());
+    println!("Used: {} bytes ({:.1}%)", 
+        size_sum.used,
+        100.0 * size_sum.used as f64 / size_sum.total() as f64
+    );
+    println!("Unused: {} bytes ({:.1}%)",
+        size_sum.unused,
+        100.0 * size_sum.unused as f64 / size_sum.total() as f64
+    );
+    println!("Can be removed: {} bytes", size_sum.remove);
+    println!("Should be repacked: {} bytes", size_sum.repack);
+    
+    println!("\nPack Statistics:");
+    println!("Used packs: {}", stats.packs.used);
+    println!("Partly used: {}", stats.packs.partly_used);
+    println!("Unused packs: {}", stats.packs.unused);
+    println!("To repack: {}", stats.packs.repack);
+    
+    Ok(())
+}
+```
+
+## Troubleshooting
+
+### Handle Check Failures
+
+```rust
+let results = repo.check(CheckOptions::default())?;
+
+if let Err(e) = results.is_ok() {
+    eprintln!("Repository check found errors:");
+    for (level, error) in &results.0 {
+        match level {
+            CheckErrorLevel::Error => eprintln!("  ERROR: {}", error),
+            CheckErrorLevel::Warn => eprintln!("  WARN: {}", error),
+        }
+    }
+    
+    // Attempt repair
+    eprintln!("\nAttempting to repair index...");
+    repo.repair_index(&RepairIndexOptions::default().read_all(true))?;
+    
+    // Check again
+    let results = repo.check(CheckOptions::default())?;
+    results.is_ok()?;
+}
+```
+
+### Recover from Corruption
+
+```rust
+// 1. Repair index files
+repo.repair_index(&RepairIndexOptions::default().read_all(true))?;
+
+// 2. Repair snapshots
+repo.repair_snapshots(&RepairSnapshotsOptions::default())?;
+
+// 3. Run full check
+let check_opts = CheckOptions::default()
+    .read_data(true)
+    .read_data_subset(ReadSubsetOption::All);
+repo.check(check_opts)?.is_ok()?;
+
+// 4. Prune to remove corrupted data
+let prune_opts = PruneOptions::default();
+let plan = repo.prune_plan(&prune_opts)?;
+repo.prune(&prune_opts, plan)?;
+```
+
+## See Also
+
+- [Backup Guide](/guides/backup) - Create snapshots
+- [Configuration](/guides/configuration) - Repository settings
+- [CheckOptions API Reference](/api/check)
+- [PruneOptions API Reference](/api/prune)

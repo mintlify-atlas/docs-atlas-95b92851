@@ -1,0 +1,258 @@
+---
+title: Repository
+description: Understanding rustic_core's repository structure and lifecycle
+---
+
+A **repository** is the fundamental storage structure in rustic_core. It provides a restic-compatible format for storing encrypted, deduplicated backups.
+
+## Repository Format
+
+rustic_core maintains **full compatibility with restic repositories**, allowing you to use the same repository with both tools. The repository format is well-defined and stable.
+
+<Note>
+Repository compatibility means you can:
+- Create a repository with rustic and restore with restic (or vice versa)
+- Migrate between tools seamlessly
+- Use rustic's performance improvements on existing restic repositories
+</Note>
+
+## Directory Structure
+
+A repository consists of several subdirectories, each serving a specific purpose:
+
+```
+repository/
+├── config          # Repository configuration
+├── keys/           # Encrypted repository keys
+├── snapshots/      # Snapshot metadata files
+├── index/          # Pack file indexes
+└── data/           # Content-addressed data packs
+    ├── 00/
+    ├── 01/
+    ├── .../
+    └── ff/
+```
+
+### Configuration File
+
+The `config` file stores repository-wide settings:
+
+- **Repository ID**: Unique identifier
+- **Version**: Format version (1 or 2)
+- **Chunker settings**: Polynomial, chunk sizes
+- **Compression**: Level and algorithm (version 2 only)
+- **Pack sizes**: Tree and data pack size parameters
+
+<CodeGroup>
+```rust Repository Configuration
+pub struct ConfigFile {
+    pub version: u32,
+    pub id: RepositoryId,
+    pub chunker_polynomial: String,
+    pub chunk_size: Option<usize>,
+    pub compression: Option<i32>,
+    pub treepack_size: Option<u32>,
+    pub datapack_size: Option<u32>,
+    // ... additional fields
+}
+```
+</CodeGroup>
+
+### Keys Directory
+
+Stores encrypted master keys, each protected by a password using scrypt key derivation. Multiple keys can exist, allowing different passwords for the same repository.
+
+### Snapshots Directory
+
+Contains JSON files describing each snapshot's metadata:
+- Timestamp
+- Hostname and paths
+- Tags and labels
+- Parent snapshot references
+- Root tree ID
+
+### Index Directory
+
+Stores index files mapping blob IDs to their location in pack files. The index enables efficient data lookup without scanning all packs.
+
+### Data Directory
+
+Contains pack files with actual encrypted and compressed data, organized into 256 subdirectories (00-ff) based on the first byte of the pack ID.
+
+## Repository States
+
+The repository transitions through different states during its lifecycle, represented as type-safe states in Rust:
+
+<Steps>
+  <Step title="Uninitialized">
+    Initial state before opening. Only basic operations like checking for existence are available.
+    
+    ```rust
+    let repo = Repository::new(&opts, &backends)?;
+    ```
+  </Step>
+  
+  <Step title="Open">
+    Repository opened with valid credentials. Configuration and keys are loaded.
+    
+    ```rust
+    let repo = repo.open(&credentials)?;
+    // Access to snapshots, basic queries
+    ```
+  </Step>
+  
+  <Step title="IndexedIds">
+    Index loaded with blob IDs only (memory-optimized). Suitable for backup operations.
+    
+    ```rust
+    let repo = repo.to_indexed_ids()?;
+    // Can perform backups efficiently
+    ```
+  </Step>
+  
+  <Step title="IndexedFull">
+    Full index loaded including blob metadata. Required for restore and advanced operations.
+    
+    ```rust  
+    let repo = repo.to_indexed()?;
+    // Can restore files, read trees, etc.
+    ```
+  </Step>
+</Steps>
+
+<Note>
+These states are enforced at **compile-time** using Rust's type system, preventing invalid operations.
+</Note>
+
+## Hot/Cold Repository Architecture
+
+rustic_core supports a **hot/cold split** for repositories, enabling tiered storage:
+
+<CardGroup cols={2}>
+  <Card title="Hot Repository" icon="fire">
+    Fast, frequently-accessed storage for:
+    - Recent snapshots
+    - Index files
+    - Tree data
+    - Small metadata
+  </Card>
+  
+  <Card title="Cold Repository" icon="snowflake">
+    Slower, archival storage for:
+    - All data packs
+    - Complete backup history
+    - Long-term retention
+  </Card>
+</CardGroup>
+
+### How It Works
+
+In a hot/cold setup:
+
+1. **Writes** go to both hot and cold backends
+2. **Reads** prioritize the hot backend for cacheable data
+3. **Large data blobs** are read from cold storage
+4. **Metadata and indexes** stay on fast storage
+
+```rust
+let hot_be = backends.repo_hot();
+if let Some(be_hot) = &hot_be {
+    be = Arc::new(HotColdBackend::new(be, be_hot.clone()));
+}
+```
+
+<Tip>
+Use hot/cold repositories to optimize costs: keep recent data on fast SSD/local storage while archiving older data to cloud object storage.
+</Tip>
+
+## Repository Lifecycle
+
+### Initialization
+
+Create a new repository with specified parameters:
+
+```rust
+use rustic_core::Repository;
+
+let repo = Repository::new(&opts, &backends)?;
+let repo = repo.init(
+    &credentials,
+    &key_opts,
+    &config_opts
+)?;
+```
+
+This:
+- Creates the directory structure
+- Generates and encrypts a master key
+- Saves the configuration file
+- Returns an opened repository
+
+### Opening
+
+Open an existing repository:
+
+```rust
+let repo = Repository::new(&opts, &backends)?;
+let repo = repo.open(&credentials)?;
+```
+
+The open process:
+1. Lists config files (validates single config exists)
+2. Verifies keys in hot/cold backends match (if applicable)
+3. Finds the correct key for the password
+4. Decrypts and loads configuration
+5. Initializes cache (if enabled)
+
+### Indexing
+
+Load the repository index for operations:
+
+```rust
+// Full index for restore operations
+let repo = repo.to_indexed()?;
+
+// ID-only index for backup operations (lower memory)
+let repo = repo.to_indexed_ids()?;
+```
+
+<Warning>
+Full indexing loads all blob metadata into memory. For large repositories (>100GB), this can use significant RAM. Use `to_indexed_ids()` for backup-only operations.
+</Warning>
+
+## Repository Options
+
+Key configuration options when creating/opening repositories:
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `no_cache` | Disable local caching | `false` |
+| `cache_dir` | Custom cache directory | System default |
+| `warm_up` | Pre-fetch pack files | `false` |
+| `warm_up_command` | Custom warm-up command | None |
+
+```rust
+let opts = RepositoryOptions {
+    no_cache: false,
+    cache_dir: Some("/custom/cache".into()),
+    warm_up: true,
+    ..Default::default()
+};
+```
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Snapshots" icon="camera" href="./snapshots">
+    Learn about snapshot metadata and organization
+  </Card>
+  <Card title="Encryption" icon="lock" href="./encryption">
+    Understand repository encryption and security
+  </Card>
+  <Card title="Backends" icon="server" href="./backends">
+    Explore storage backend options
+  </Card>
+  <Card title="Deduplication" icon="compress" href="./deduplication">
+    See how data deduplication works
+  </Card>
+</CardGroup>

@@ -1,0 +1,312 @@
+---
+title: Backend Traits
+description: Core backend traits that define read and write operations for rustic repositories
+---
+
+The backend system in rustic is built around three core traits that define how data is read from and written to repositories. These traits enable rustic to support multiple storage backends with a consistent interface.
+
+## ReadBackend Trait
+
+The `ReadBackend` trait defines read-only operations for accessing repository data. All backends must implement this trait.
+
+```rust
+pub trait ReadBackend: Send + Sync + 'static {
+    fn location(&self) -> String;
+    fn list_with_size(&self, tpe: FileType) -> RusticResult<Vec<(Id, u32)>>;
+    fn list(&self, tpe: FileType) -> RusticResult<Vec<Id>>;
+    fn read_full(&self, tpe: FileType, id: &Id) -> RusticResult<Bytes>;
+    fn read_partial(
+        &self,
+        tpe: FileType,
+        id: &Id,
+        cacheable: bool,
+        offset: u32,
+        length: u32,
+    ) -> RusticResult<Bytes>;
+    fn warmup_path(&self, tpe: FileType, id: &Id) -> String;
+    fn needs_warm_up(&self) -> bool { false }
+    fn warm_up(&self, tpe: FileType, id: &Id) -> RusticResult<()> { Ok(()) }
+}
+```
+
+### Key Methods
+
+#### location
+
+Returns the location identifier of the backend (e.g., `"local:/path/to/repo"`, `"rest:https://example.com/repo"`).
+
+```rust
+let location = backend.location();
+println!("Repository location: {}", location);
+```
+
+#### list_with_size
+
+Lists all files of a given type with their sizes. This is the primary listing method that other methods build upon.
+
+```rust
+use rustic_core::FileType;
+
+let snapshots = backend.list_with_size(FileType::Snapshot)?;
+for (id, size) in snapshots {
+    println!("Snapshot {}: {} bytes", id, size);
+}
+```
+
+#### list
+
+Lists all files of a given type (without sizes). This is a convenience method that calls `list_with_size` internally.
+
+```rust
+let index_ids = backend.list(FileType::Index)?;
+```
+
+#### read_full
+
+Reads the complete contents of a file.
+
+```rust
+let config_data = backend.read_full(FileType::Config, &Id::default())?;
+```
+
+#### read_partial
+
+Reads a portion of a file, useful for efficient data access in large pack files.
+
+```rust
+// Read 1024 bytes starting at offset 512
+let partial_data = backend.read_partial(
+    FileType::Pack,
+    &pack_id,
+    true,  // cacheable
+    512,   // offset
+    1024,  // length
+)?;
+```
+
+#### warmup_path
+
+Returns a backend-specific path string that can be used for warming up cold storage.
+
+```rust
+let path = backend.warmup_path(FileType::Pack, &pack_id);
+// Use path with external warm-up command
+```
+
+## WriteBackend Trait
+
+The `WriteBackend` trait extends `ReadBackend` with write and delete operations.
+
+```rust
+pub trait WriteBackend: ReadBackend {
+    fn create(&self) -> RusticResult<()> { Ok(()) }
+    fn write_bytes(
+        &self,
+        tpe: FileType,
+        id: &Id,
+        cacheable: bool,
+        buf: Bytes
+    ) -> RusticResult<()>;
+    fn remove(
+        &self,
+        tpe: FileType,
+        id: &Id,
+        cacheable: bool
+    ) -> RusticResult<()>;
+}
+```
+
+### Key Methods
+
+#### create
+
+Initializes a new repository structure in the backend.
+
+```rust
+backend.create()?;
+// Creates directory structure: keys/, snapshots/, index/, data/, config
+```
+
+#### write_bytes
+
+Writes data to a file in the repository.
+
+```rust
+use bytes::Bytes;
+
+let data = Bytes::from("file contents");
+backend.write_bytes(
+    FileType::Snapshot,
+    &snapshot_id,
+    true,  // cacheable
+    data,
+)?;
+```
+
+#### remove
+
+Deletes a file from the repository.
+
+```rust
+backend.remove(FileType::Pack, &pack_id, false)?;
+```
+
+## FindInBackend Trait
+
+The `FindInBackend` trait provides helper methods for finding files by ID prefix. It's automatically implemented for all types that implement `ReadBackend`.
+
+```rust
+pub trait FindInBackend: ReadBackend {
+    fn find_starts_with<T: AsRef<str>>(
+        &self,
+        tpe: FileType,
+        vec: &[T]
+    ) -> RusticResult<Vec<Id>>;
+    
+    fn find_id(&self, tpe: FileType, id: &str) -> RusticResult<Id>;
+    
+    fn find_ids<T: AsRef<str>>(
+        &self,
+        tpe: FileType,
+        ids: &[T]
+    ) -> RusticResult<Vec<Id>>;
+}
+```
+
+### Usage Examples
+
+```rust
+// Find snapshot by partial ID
+let snapshot_id = backend.find_id(FileType::Snapshot, "a1b2c3")?;
+
+// Find multiple snapshots
+let ids = backend.find_ids(
+    FileType::Snapshot,
+    &["a1b2c3", "d4e5f6"]
+)?;
+```
+
+## FileType Enum
+
+The `FileType` enum identifies different types of files stored in a repository:
+
+```rust
+pub enum FileType {
+    Config,    // Repository configuration
+    Index,     // Pack file indices
+    Key,       // Encryption keys
+    Snapshot,  // Snapshot metadata
+    Pack,      // Data pack files
+}
+```
+
+Each file type has its own directory:
+
+```rust
+let dir = FileType::Pack.dirname();  // "data"
+let dir = FileType::Snapshot.dirname();  // "snapshots"
+let dir = FileType::Index.dirname();  // "index"
+let dir = FileType::Key.dirname();  // "keys"
+```
+
+## Implementing a Custom Backend
+
+To create a custom backend, implement the `ReadBackend` trait (and optionally `WriteBackend`):
+
+```rust
+use rustic_core::{ReadBackend, WriteBackend, FileType, Id, RusticResult};
+use bytes::Bytes;
+use std::collections::HashMap;
+
+pub struct CustomBackend {
+    data: HashMap<(FileType, Id), Vec<u8>>,
+}
+
+impl ReadBackend for CustomBackend {
+    fn location(&self) -> String {
+        "custom://my-backend".to_string()
+    }
+
+    fn list_with_size(&self, tpe: FileType) -> RusticResult<Vec<(Id, u32)>> {
+        let items: Vec<_> = self.data
+            .iter()
+            .filter(|((t, _), _)| *t == tpe)
+            .map(|((_, id), data)| (*id, data.len() as u32))
+            .collect();
+        Ok(items)
+    }
+
+    fn read_full(&self, tpe: FileType, id: &Id) -> RusticResult<Bytes> {
+        self.data
+            .get(&(tpe, *id))
+            .map(|data| Bytes::from(data.clone()))
+            .ok_or_else(|| /* error */)
+    }
+
+    fn read_partial(
+        &self,
+        tpe: FileType,
+        id: &Id,
+        _cacheable: bool,
+        offset: u32,
+        length: u32,
+    ) -> RusticResult<Bytes> {
+        let data = self.data.get(&(tpe, *id))
+            .ok_or_else(|| /* error */)?;
+        let start = offset as usize;
+        let end = start + length as usize;
+        Ok(Bytes::from(data[start..end].to_vec()))
+    }
+
+    fn warmup_path(&self, tpe: FileType, id: &Id) -> String {
+        format!("{}/{}", tpe.dirname(), id)
+    }
+}
+
+impl WriteBackend for CustomBackend {
+    fn write_bytes(
+        &self,
+        tpe: FileType,
+        id: &Id,
+        _cacheable: bool,
+        buf: Bytes,
+    ) -> RusticResult<()> {
+        // Implementation
+        Ok(())
+    }
+
+    fn remove(
+        &self,
+        tpe: FileType,
+        id: &Id,
+        _cacheable: bool,
+    ) -> RusticResult<()> {
+        // Implementation
+        Ok(())
+    }
+}
+```
+
+## Thread Safety
+
+All backend implementations must be:
+- `Send`: Can be transferred between threads
+- `Sync`: Can be safely shared between threads
+- `'static`: No non-static references
+
+This allows backends to be used in concurrent operations:
+
+```rust
+use std::sync::Arc;
+use rustic_core::WriteBackend;
+
+let backend: Arc<dyn WriteBackend> = Arc::new(my_backend);
+
+// Can be cloned and used across threads
+let backend_clone = backend.clone();
+```
+
+## Related Types
+
+- [BackendOptions](/api/backend-options) - Configuration for creating backends
+- [Supported Backends](/api/supported-backends) - All available backend implementations

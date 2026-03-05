@@ -1,0 +1,326 @@
+---
+title: "Prune"
+description: "Reclaim space by removing unused data from the repository"
+---
+
+The prune operation removes unused data from the repository and optionally repacks data for optimal storage.
+
+## PrunePlan::from_prune_options()
+
+Creates a prune plan from the given options.
+
+```rust
+pub fn from_prune_options<S: Open>(
+    repo: &Repository<S>,
+    opts: &PruneOptions,
+) -> RusticResult<PrunePlan>
+```
+
+### Parameters
+
+- `repo`: The repository to analyze
+- `opts`: Prune options
+
+### Returns
+
+Returns a `PrunePlan` describing what will be deleted and repacked.
+
+### Errors
+
+- If `repack_uncompressed` is set and the repository is version 1
+- If `keep_pack` or `keep_delete` durations are invalid
+
+## prune_repository()
+
+Executes a prune plan on the repository.
+
+```rust
+pub fn prune_repository<S: Open>(
+    repo: &Repository<S>,
+    opts: &PruneOptions,
+    prune_plan: PrunePlan,
+) -> RusticResult<()>
+```
+
+### Errors
+
+- If the repository is in append-only mode
+- If pack operations fail
+
+## PruneOptions
+
+Configuration options for the prune operation.
+
+<ParamField path="max_repack" type="LimitOption" default="10%">
+  Maximum data to repack as percentage of repo size, absolute size (e.g., '5b', '2 kB', '3M', '4TiB'), or 'unlimited'.
+</ParamField>
+
+<ParamField path="max_unused" type="LimitOption" default="5%">
+  Tolerate limit of unused data as percentage of repo size after pruning, absolute size, or 'unlimited'.
+</ParamField>
+
+<ParamField path="keep_pack" type="Span" default="0d">
+  Minimum duration (e.g., 90d) to keep packs before repacking or removing. More recently created packs won't be processed.
+</ParamField>
+
+<ParamField path="keep_delete" type="Span" default="23h">
+  Minimum duration (e.g., 10m) to keep packs marked for deletion. More recently marked packs won't be deleted.
+</ParamField>
+
+<ParamField path="instant_delete" type="bool" default={false}>
+  Delete files immediately instead of marking them. Also removes all files already marked for deletion.
+  
+  <Warning>Only use if you are sure the repository is not accessed by parallel processes!</Warning>
+</ParamField>
+
+<ParamField path="early_delete_index" type="bool" default={false}>
+  Delete index files early if `instant_delete` is chosen. Allows prune to run when space is limited.
+  
+  <Warning>If prune aborts, this can lead to a missing index which must be repaired!</Warning>
+</ParamField>
+
+<ParamField path="fast_repack" type="bool" default={false}>
+  Simply copy blobs when repacking instead of decrypting, possibly compressing, and encrypting.
+</ParamField>
+
+<ParamField path="repack_uncompressed" type="bool" default={false}>
+  Repack packs containing uncompressed blobs. Cannot be used with `fast_repack`. Implies `max_unused=0`.
+</ParamField>
+
+<ParamField path="repack_all" type="bool" default={false}>
+  Repack all packs. Implies `max_unused=0`.
+</ParamField>
+
+<ParamField path="repack_cacheable_only" type="Option<bool>">
+  Only repack packs which are cacheable. Default: true for hot/cold repository, else false.
+</ParamField>
+
+<ParamField path="no_resize" type="bool" default={false}>
+  Do not repack packs which only need to be resized.
+</ParamField>
+
+<ParamField path="ignore_snaps" type="Vec<SnapshotId>" default="[]">
+  Ignore these snapshots when looking for data still in use.
+  
+  <Warning>Use with care! Specifying non-deleted snapshots will remove data used by those snapshots!</Warning>
+</ParamField>
+
+## LimitOption
+
+Specifies a size limit for prune operations.
+
+```rust
+pub enum LimitOption {
+    Size(ByteSize),
+    Percentage(u64),
+    Unlimited,
+}
+```
+
+### Variants
+
+<ParamField path="Size(ByteSize)">
+  Absolute size limit (e.g., "10 GB", "500 MiB").
+</ParamField>
+
+<ParamField path="Percentage(u64)">
+  Percentage of repository size (e.g., "10%" means 10% of total repo size).
+</ParamField>
+
+<ParamField path="Unlimited">
+  No limit.
+</ParamField>
+
+## PrunePlan
+
+A plan describing what should be repacked or removed.
+
+```rust
+pub struct PrunePlan {
+    pub stats: PruneStats,
+}
+```
+
+### Methods
+
+#### repack_packs()
+
+Get the list of packs to repack.
+
+```rust
+pub fn repack_packs(&self) -> Vec<PackId>
+```
+
+## PruneStats
+
+Statistics about a prune plan.
+
+<ParamField path="packs_to_delete" type="DeleteStats">
+  Statistics about pack count to delete/keep/recover.
+</ParamField>
+
+<ParamField path="size_to_delete" type="DeleteStats">
+  Statistics about pack sizes to delete/keep/recover.
+</ParamField>
+
+<ParamField path="packs" type="PackStats">
+  Statistics about current pack situation.
+</ParamField>
+
+<ParamField path="blobs" type="BlobTypeMap<SizeStats>">
+  Statistics about blobs in the repository.
+</ParamField>
+
+<ParamField path="size" type="BlobTypeMap<SizeStats>">
+  Statistics about total sizes of blobs.
+</ParamField>
+
+<ParamField path="packs_unref" type="u64">
+  Number of unreferenced pack files.
+</ParamField>
+
+<ParamField path="size_unref" type="u64">
+  Total size of unreferenced pack files.
+</ParamField>
+
+<ParamField path="index_files" type="u64">
+  Number of index files.
+</ParamField>
+
+<ParamField path="index_files_rebuild" type="u64">
+  Number of index files to be rebuilt.
+</ParamField>
+
+## PackStats
+
+Statistics about packs.
+
+<ParamField path="used" type="u64">
+  Number of fully used packs.
+</ParamField>
+
+<ParamField path="partly_used" type="u64">
+  Number of partly used packs.
+</ParamField>
+
+<ParamField path="unused" type="u64">
+  Number of unused packs (equals packs-to-remove).
+</ParamField>
+
+<ParamField path="repack" type="u64">
+  Number of packs to repack.
+</ParamField>
+
+<ParamField path="keep" type="u64">
+  Number of packs to keep.
+</ParamField>
+
+## SizeStats
+
+Statistics about sizes.
+
+<ParamField path="used" type="u64">
+  Number of used blobs/bytes.
+</ParamField>
+
+<ParamField path="unused" type="u64">
+  Number of unused blobs/bytes.
+</ParamField>
+
+<ParamField path="remove" type="u64">
+  Number of blobs/bytes to remove.
+</ParamField>
+
+<ParamField path="repack" type="u64">
+  Number of blobs/bytes to repack.
+</ParamField>
+
+<ParamField path="repackrm" type="u64">
+  Number of blobs/bytes to remove after repacking.
+</ParamField>
+
+### Methods
+
+```rust
+pub fn total(&self) -> u64
+pub fn total_after_prune(&self) -> u64
+pub fn unused_after_prune(&self) -> u64
+```
+
+## Example
+
+```rust
+use rustic_core::{
+    LimitOption,
+    PruneOptions,
+    PrunePlan,
+    Repository,
+};
+use jiff::Span;
+
+// Configure prune options
+let opts = PruneOptions {
+    max_repack: LimitOption::Percentage(10),
+    max_unused: LimitOption::Percentage(5),
+    keep_pack: Span::new().days(7),
+    keep_delete: Span::new().hours(23),
+    instant_delete: false,
+    ..Default::default()
+};
+
+// Create prune plan
+let plan = PrunePlan::from_prune_options(&repo, &opts)?;
+
+// Display statistics
+println!("Packs to repack: {}", plan.stats.packs.repack);
+println!("Packs to remove: {}", plan.stats.packs.unused);
+println!("Size to repack: {} bytes", plan.stats.size_sum().repack);
+println!("Size to remove: {} bytes", plan.stats.size_sum().remove);
+
+// Execute prune
+prune_repository(&repo, &opts, plan)?;
+println!("Prune completed!");
+```
+
+## Advanced Usage
+
+### Repack Uncompressed Data
+
+```rust
+let opts = PruneOptions {
+    repack_uncompressed: true,
+    max_repack: LimitOption::Unlimited,
+    ..Default::default()
+};
+```
+
+### Instant Delete (Careful!)
+
+```rust
+let opts = PruneOptions {
+    instant_delete: true,
+    keep_delete: Span::new().hours(0),
+    ..Default::default()
+};
+```
+
+### Fast Repack
+
+```rust
+let opts = PruneOptions {
+    fast_repack: true,
+    max_repack: LimitOption::Size(ByteSize::gb(10)),
+    ..Default::default()
+};
+```
+
+## Notes
+
+- Prune is a two-step process: mark for deletion, then delete after `keep_delete` duration
+- Use `instant_delete` carefully - only when no other processes access the repository
+- Repacking consolidates partly-used packs to reclaim space
+- `max_repack` limits how much data is repacked to avoid long-running operations
+- `max_unused` ensures unused data stays below a threshold
+- Recently created packs (within `keep_pack` duration) are never repacked
+- Prune automatically rebuilds index files as needed
+- Append-only repositories cannot be pruned

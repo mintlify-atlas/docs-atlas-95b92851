@@ -1,0 +1,278 @@
+---
+title: Blob Types
+description: Blob storage, types, and location tracking
+---
+
+Blobs are the fundamental storage units in rustic. All data and metadata is chunked into blobs, stored in pack files, and indexed by their content hash.
+
+## Overview
+
+The blob module provides types and abstractions for working with blob data:
+
+- **BlobType**: Distinguishes between tree and data blobs
+- **BlobId**: Content-addressed identifier (SHA-256 hash)
+- **BlobLocation**: Position within a pack file
+- **Tree**: Directory structure blob
+
+## BlobType Enum
+
+Every blob has one of two types:
+
+```rust
+pub enum BlobType {
+    Tree,  // Directory/metadata
+    Data,  // File content
+}
+```
+
+**Tree blobs** contain:
+- Directory structure
+- File metadata (permissions, timestamps)
+- References to other trees and data blobs
+
+**Data blobs** contain:
+- Chunked file content
+- Deduplicated across all snapshots
+
+**Example**:
+```rust
+use rustic_core::blob::BlobType;
+
+// Check if a blob type is cacheable
+if blob_type.is_cacheable() {
+    // Tree blobs are cached for faster access
+    cache.store(blob_id, blob_data);
+}
+```
+
+## Blob Identifiers
+
+### BlobId
+
+Generic blob identifier (32-byte SHA-256 hash):
+
+```rust
+use rustic_core::blob::BlobId;
+use rustic_core::id::Id;
+
+// Create from raw ID
+let id: Id = hash(&data); // SHA-256 hash
+let blob_id = BlobId::from(id);
+
+// Display as hex
+println!("Blob: {}", blob_id);
+```
+
+### TreeId and DataId
+
+Type-safe blob identifiers:
+
+```rust
+use rustic_core::blob::tree::TreeId;
+use rustic_core::blob::DataId;
+
+// Type system ensures trees and data aren't mixed
+let tree_id: TreeId = blob_id.into();
+let data_id: DataId = blob_id.into();
+
+// These implement the PackedId trait
+assert_eq!(TreeId::TYPE, BlobType::Tree);
+assert_eq!(DataId::TYPE, BlobType::Data);
+```
+
+## BlobLocation
+
+Describes where a blob lives within a pack file:
+
+```rust
+use rustic_core::blob::BlobLocation;
+use std::num::NonZeroU32;
+
+pub struct BlobLocation {
+    pub offset: u32,              // Byte offset in pack
+    pub length: u32,              // Compressed length
+    pub uncompressed_length: Option<NonZeroU32>,
+}
+```
+
+**Example**:
+```rust
+// Read a specific blob from a pack
+let location = index.get_blob(&blob_id)?;
+let data = backend.read_partial(
+    FileType::Pack,
+    &pack_id,
+    false, // not encrypted
+    location.offset,
+    location.length,
+)?;
+
+// Decompress if needed
+if let Some(uncompressed_len) = location.uncompressed_length {
+    data = decompress(data, uncompressed_len.get())?;
+}
+```
+
+## Tree Blobs
+
+Trees represent directory structures as a list of nodes:
+
+```rust
+use rustic_core::blob::tree::{Tree, TreeId};
+use rustic_core::backend::node::{Node, NodeType};
+
+// Deserialize a tree from the backend
+let tree = Tree::from_backend(&backend, &index, tree_id)?;
+
+// Iterate over directory entries
+for node in &tree.nodes {
+    match node.node_type() {
+        NodeType::Dir => println!("Directory: {}", node.name()),
+        NodeType::File => println!("File: {} ({} bytes)", node.name(), node.meta.size),
+        _ => {}
+    }
+}
+```
+
+### Tree Structure
+
+```rust
+pub struct Tree {
+    pub nodes: Vec<Node>,  // Sorted by name
+}
+```
+
+Each `Node` contains:
+- Name (filename)
+- Type (file, dir, symlink, etc.)
+- Metadata (size, permissions, timestamps)
+- `subtree` field (for directories)
+- `content` field (blob IDs for file data)
+
+### Creating Trees
+
+```rust
+use rustic_core::blob::tree::Tree;
+
+let mut tree = Tree::new();
+tree.add(node);
+
+// Serialize to bytes + compute ID
+let (data, tree_id) = tree.serialize()?;
+```
+
+## Blob Storage
+
+Blobs are stored in pack files for efficiency:
+
+```
+Pack File Structure:
+┌─────────────────────┐
+│  Blob 1 data        │  } Concatenated blob data
+│  Blob 2 data        │  }
+│  Blob 3 data        │  }
+├─────────────────────┤
+│  Pack Header        │  Encrypted list of blob locations
+├─────────────────────┤
+│  Header Length (4B) │
+└─────────────────────┘
+```
+
+**Key points**:
+- Multiple blobs per pack file
+- Same blob type per pack (all trees or all data)
+- Index maps blob IDs to pack locations
+- Compression applied per-blob (repository v2)
+
+## BlobTypeMap
+
+Utility for mapping blob types to values:
+
+```rust
+use rustic_core::blob::{BlobTypeMap, BlobType, Initialize};
+
+// Create a map with different values per type
+let mut counts = BlobTypeMap::init(|_| 0);
+counts[BlobType::Tree] += 1;
+counts[BlobType::Data] += 1;
+
+println!("Trees: {}, Data: {}", counts[BlobType::Tree], counts[BlobType::Data]);
+```
+
+## Working with Blobs
+
+### Reading Blobs
+
+```rust
+// Look up blob in index
+let blob_location = index.get_blob(&blob_id)
+    .ok_or("Blob not found in index")?;
+
+// Read from pack file
+let pack_id = blob_location.pack_id;
+let data = blob_location.read_data(&backend)?;
+```
+
+### Writing Blobs
+
+```rust
+use rustic_core::blob::packer::Packer;
+
+// Packer batches blobs into pack files
+let mut packer = Packer::new(
+    backend,
+    BlobType::Data,
+    indexer,
+    config,
+    total_size,
+)?;
+
+// Add blob (returns blob ID)
+let blob_id = packer.add(&data)?;
+
+// Finalize pack
+packer.finalize()?;
+```
+
+## Blob Deduplication
+
+Blobs are content-addressed by SHA-256 hash:
+
+1. Compute hash of blob data
+2. Use hash as blob ID
+3. Check index for existing blob
+4. Skip writing if already exists
+
+```rust
+use rustic_core::crypto::hasher::hash;
+
+let blob_id = hash(&data).into();
+
+if index.has_blob(&blob_id) {
+    // Blob already exists, skip upload
+    return Ok(blob_id);
+}
+
+// New blob, add to pack
+packer.add(&data)?;
+```
+
+## Performance Considerations
+
+**Caching**:
+- Tree blobs are cached (small, frequently accessed)
+- Data blobs are not cached (large, accessed once)
+
+**Pack size**:
+- Trees: 4 MiB default (grows with repo size)
+- Data: 32 MiB default (grows with repo size)
+
+**Reading**:
+- Limit pack reads to 40 MiB chunks
+- Fill small holes (< 256 KiB) when repacking
+
+## See Also
+
+- [Repository Files](/api/repofile) - Pack and index file formats
+- [Index](/api/index) - Blob indexing and lookup
+- [Chunker](/api/chunker) - Content-defined chunking

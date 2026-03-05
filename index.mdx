@@ -1,97 +1,190 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: Rustic Core Documentation
+mode: custom
 ---
 
-## Setting up
+<div className="relative bg-gradient-to-br from-[#9c2f06] via-[#a64729] to-[#a68779] dark:from-[#0f1117] dark:via-[#1a1d27] dark:to-[#242838] py-20 overflow-hidden">
+  <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxnIGZpbGw9IiNmZmZmZmYiIGZpbGwtb3BhY2l0eT0iMC4wNSI+PHBhdGggZD0iTTM2IDE0aDRWMGgtNHY2aC00VjBoLTR2NmgtNFYwSDEwdjZINnYtNkg0djZIMHY0aDR2NGgwdjRIMHY0aDR2NGgwdjRIMHY0aDR2NGgwdjRIMHY0aDR2NGgwdjRIMHY0aDR2NGgwdjRIMHY0aDR2NGgwdjRIMHY0aDQiLz48L2c+PC9nPjwvc3ZnPg==')] opacity-20"></div>
+  <div className="max-w-6xl mx-auto px-6 lg:px-8 relative z-10">
+    <div className="text-center">
+      <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white dark:text-gray-100 mb-6">
+        Fast, Encrypted, Deduplicated Backups
+      </h1>
+      <p className="text-lg sm:text-xl text-white/90 dark:text-gray-300 max-w-3xl mx-auto mb-10">
+        Build powerful backup solutions with Rustic Core—a Rust library that combines speed, security, and efficiency for production-grade backup systems.
+      </p>
+      <div className="flex flex-col sm:flex-row gap-4 justify-center items-center flex-wrap">
+        <a 
+          href="/quickstart" 
+          className="inline-block bg-white dark:bg-[#1a1d27] text-[#9c2f06] dark:text-white font-semibold px-8 py-3 rounded-lg hover:bg-gray-100 dark:hover:bg-[#242838] transition-colors shadow-lg"
+        >
+          Get Started
+        </a>
+        <a 
+          href="/api/repository" 
+          className="inline-block border-2 border-white/30 dark:border-[#27272a] bg-white/10 dark:bg-[#1a1d27]/50 text-white dark:text-gray-100 font-semibold px-8 py-3 rounded-lg hover:bg-white/20 dark:hover:bg-[#242838] transition-colors"
+        >
+          API Reference
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
 
-Get your documentation site up and running in minutes.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Quick Start</h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Get up and running with Rustic Core in just a few steps.
+  </p>
+  
+  <Steps>
+    <Step title="Add Rustic Core to your project">
+      Add the dependency to your `Cargo.toml` file:
+      
+      ```toml
+      [dependencies]
+      rustic_core = "0"
+      rustic_backend = "0"
+      ```
+      
+      <Tip>Use version "0" to always get the latest compatible version.</Tip>
+    </Step>
+    
+    <Step title="Initialize a repository">
+      Create and initialize a new backup repository:
+      
+      ```rust
+      use rustic_backend::BackendOptions;
+      use rustic_core::{ConfigOptions, KeyOptions, Repository, RepositoryOptions};
+      
+      // Set up backend
+      let backends = BackendOptions::default()
+          .repository("/tmp/my-backup")
+          .to_backends()?;
+      
+      // Initialize with password
+      let repo_opts = RepositoryOptions::default().password("my-secure-password");
+      let repo = Repository::new(&repo_opts, &backends)?
+          .init(&KeyOptions::default(), &ConfigOptions::default())?;
+      ```
+      
+      <Info>Repositories are encrypted by default using AES-256 with Poly1305 authentication.</Info>
+    </Step>
+    
+    <Step title="Create your first backup">
+      Back up a directory to your repository:
+      
+      ```rust
+      use rustic_core::{BackupOptions, PathList, SnapshotOptions};
+      
+      // Open repository and prepare for backup
+      let repo = Repository::new(&repo_opts, &backends)?
+          .open()?
+          .to_indexed_ids()?;
+      
+      // Configure backup
+      let source = PathList::from_string("./my-data")?.sanitize()?;
+      let snap = SnapshotOptions::default()
+          .add_tags("production,daily")?
+          .to_snapshot()?;
+      
+      // Run backup
+      let snapshot = repo.backup(&BackupOptions::default(), &source, snap)?;
+      println!("Backup complete! Snapshot ID: {}", snapshot.id);
+      ```
+      
+      Learn more in the [Backup Guide](/guides/backup).
+    </Step>
+  </Steps>
+</div>
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Core Features</h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Everything you need to build production-ready backup solutions.
+  </p>
+  
+  <CardGroup cols={3}>
+    <Card title="Content-Defined Chunking" icon="scissors" href="/concepts/deduplication">
+      Efficient deduplication using CDC algorithms reduces storage requirements by 60-95%.
+    </Card>
+    <Card title="AES-256 Encryption" icon="lock" href="/concepts/encryption">
+      Military-grade encryption with Poly1305 authentication ensures your data stays secure.
+    </Card>
+    <Card title="Restic Compatible" icon="code-branch" href="/concepts/repository">
+      Read and write restic repository format—interoperable with the restic ecosystem.
+    </Card>
+    <Card title="Multiple Backends" icon="server" href="/concepts/backends">
+      Support for local, S3, REST, rclone, and 20+ cloud storage providers.
+    </Card>
+    <Card title="Fast Performance" icon="bolt" href="/guides/backup">
+      Parallel processing and optimized algorithms deliver high-speed backups and restores.
+    </Card>
+    <Card title="Repository Maintenance" icon="wrench" href="/guides/repository-management">
+      Built-in check, prune, and repair operations keep repositories healthy.
+    </Card>
+  </CardGroup>
+</div>
 
-## Make it yours
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Explore by Topic</h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Dive deeper into specific areas of Rustic Core.
+  </p>
+  
+  <CardGroup cols={2}>
+    <Card title="Core Concepts" icon="book-open" href="/concepts/repository">
+      Understand repositories, snapshots, encryption, and deduplication fundamentals.
+    </Card>
+    <Card title="Guides" icon="map" href="/guides/backup">
+      Step-by-step instructions for backup, restore, and repository management.
+    </Card>
+    <Card title="Examples" icon="code" href="/examples/init-repository">
+      Real-world code examples showing common use cases and patterns.
+    </Card>
+    <Card title="API Reference" icon="book" href="/api/repository">
+      Complete API documentation for all types, methods, and options.
+    </Card>
+  </CardGroup>
+</div>
 
-Design a docs site that looks great and empowers your users.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Community & Support</h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Get help and connect with other Rustic users.
+  </p>
+  
+  <CardGroup cols={2}>
+    <Card title="GitHub Discussions" icon="comments" href="https://github.com/rustic-rs/rustic/discussions">
+      Ask questions, share ideas, and discuss features with the community.
+    </Card>
+    <Card title="Discord Community" icon="discord" href="https://discord.gg/WRUWENZnzQ">
+      Join our Discord server for real-time chat and support.
+    </Card>
+    <Card title="Issue Tracker" icon="bug" href="https://github.com/rustic-rs/rustic_core/issues">
+      Report bugs and request features on GitHub.
+    </Card>
+    <Card title="Contributing Guide" icon="code-pull-request" href="https://rustic.cli.rs/docs/contributing-to-rustic.html">
+      Learn how to contribute code, documentation, and improvements.
+    </Card>
+  </CardGroup>
+</div>
 
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
-  </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
-  </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
-
-## Create beautiful pages
-
-Everything you need to create world-class documentation.
-
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
-
-## Need inspiration?
-
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="bg-gradient-to-r from-[#9c2f06]/10 to-[#a68779]/10 dark:from-[#1a1d27] dark:to-[#242838] border border-[#9c2f06]/20 dark:border-[#27272a] rounded-2xl p-8 lg:p-12">
+    <div className="text-center">
+      <h2 className="text-2xl lg:text-3xl font-bold text-gray-900 dark:text-white mb-4">
+        Ready to Build Your Backup Solution?
+      </h2>
+      <p className="text-base text-gray-600 dark:text-gray-400 mb-8 max-w-2xl mx-auto">
+        Start building with Rustic Core today and leverage the power of encrypted, deduplicated backups in your Rust applications.
+      </p>
+      <a 
+        href="/quickstart" 
+        className="inline-block bg-[#9c2f06] hover:bg-[#7d2605] dark:bg-[#9c2f06] dark:hover:bg-[#b33607] text-white font-semibold px-8 py-3 rounded-lg transition-colors shadow-lg"
+      >
+        Get Started Now
+      </a>
+    </div>
+  </div>
+</div>

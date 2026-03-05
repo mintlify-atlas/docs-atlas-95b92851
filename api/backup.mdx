@@ -1,0 +1,153 @@
+---
+title: "Backup"
+description: "Create snapshots by backing up data to the repository"
+---
+
+The backup operation creates snapshots of your data and stores them in the rustic repository.
+
+## backup()
+
+Performs a backup operation, creating a new snapshot.
+
+```rust
+pub fn backup<S: IndexedIds>(
+    repo: &Repository<S>,
+    opts: &BackupOptions,
+    source: &PathList,
+    snap: SnapshotFile,
+) -> RusticResult<SnapshotFile>
+```
+
+### Parameters
+
+- `repo`: The repository to backup to
+- `opts`: Backup options
+- `source`: The source paths to backup
+- `snap`: Snapshot metadata
+
+### Returns
+
+Returns the created `SnapshotFile` containing metadata about the backup.
+
+### Errors
+
+- If sending messages to the packer fails
+- If the index file cannot be serialized
+- If time conversion fails
+
+## BackupOptions
+
+Configuration options for the backup operation.
+
+<ParamField path="stdin_filename" type="String" default="stdin">
+  Filename to use when backing up from stdin.
+</ParamField>
+
+<ParamField path="stdin_command" type="Option<CommandInput>">
+  Call the given command and use its output as stdin.
+</ParamField>
+
+<ParamField path="as_path" type="Option<PathBuf>">
+  Manually set the backup path in the snapshot.
+</ParamField>
+
+<ParamField path="no_scan" type="bool" default={false}>
+  Don't scan the backup source for its size. This disables ETA estimation for backup.
+</ParamField>
+
+<ParamField path="dry_run" type="bool" default={false}>
+  Dry-run mode: Don't write any data or snapshot.
+</ParamField>
+
+<ParamField path="parent_opts" type="ParentOptions">
+  Options for how to use a parent snapshot.
+</ParamField>
+
+<ParamField path="ignore_save_opts" type="LocalSourceSaveOptions">
+  Options for how to save entries from a local source.
+</ParamField>
+
+<ParamField path="excludes" type="Excludes">
+  Files and patterns to exclude from backup.
+</ParamField>
+
+<ParamField path="ignore_filter_opts" type="LocalSourceFilterOptions">
+  Options for how to filter files from a local source.
+</ParamField>
+
+## ParentOptions
+
+Options for using parent snapshots during backup.
+
+<ParamField path="group_by" type="Option<SnapshotGroupCriterion>">
+  Group snapshots by any combination of host, label, paths, tags to find a suitable parent.
+  Default: host, label, paths.
+</ParamField>
+
+<ParamField path="parents" type="Vec<String>">
+  Snapshot(s) to use as parent. Can be specified multiple times.
+</ParamField>
+
+<ParamField path="skip_if_unchanged" type="bool" default={false}>
+  Skip writing the snapshot if nothing changed compared to the parent snapshot.
+</ParamField>
+
+<ParamField path="force" type="bool" default={false}>
+  Use no parent, read all files.
+</ParamField>
+
+<ParamField path="ignore_ctime" type="bool" default={false}>
+  Ignore ctime changes when checking for modified files.
+</ParamField>
+
+<ParamField path="ignore_inode" type="bool" default={false}>
+  Ignore inode number changes when checking for modified files.
+</ParamField>
+
+## PathList
+
+Represents a list of paths to backup.
+
+```rust
+pub struct PathList(Vec<PathBuf>);
+```
+
+PathList can be created from a string using `-` for stdin or file paths.
+
+## Example
+
+```rust
+use rustic_core::{
+    BackupOptions,
+    PathList,
+    Repository,
+    SnapshotFile,
+};
+
+// Create backup options
+let opts = BackupOptions {
+    stdin_filename: "myfile.txt".to_string(),
+    dry_run: false,
+    no_scan: false,
+    ..Default::default()
+};
+
+// Define source paths
+let source = PathList::from_string("/home/user/documents")?;
+
+// Create snapshot metadata
+let mut snap = SnapshotFile::default();
+snap.hostname = "myhost".to_string();
+snap.paths = vec!["/home/user/documents".into()];
+
+// Perform backup
+let snapshot = backup(&repo, &opts, &source, snap)?;
+println!("Created snapshot: {}", snapshot.id);
+```
+
+## Notes
+
+- The backup process uses deduplication to avoid storing duplicate data
+- Parent snapshots are used to detect unchanged files
+- Backup supports reading from stdin using `-` as the source path
+- Use `dry_run` to test backup operations without writing data

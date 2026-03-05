@@ -1,0 +1,318 @@
+---
+title: Performing Backups
+description: Learn how to create backups with rustic_core
+---
+
+# Performing Backups
+
+This guide covers how to create backups using rustic_core, including basic backups, incremental backups, and advanced filtering options.
+
+## Overview
+
+Backups in rustic_core create immutable snapshots of your data. Each backup operation produces a new snapshot that efficiently stores only the data that has changed since the last backup.
+
+## Basic Backup
+
+<Steps>
+
+### Open the repository
+
+First, open your repository with indexed IDs support:
+
+```rust
+use rustic_core::{
+    Repository, RepositoryOptions, Credentials,
+    BackupOptions, PathList, SnapshotOptions
+};
+use rustic_backend::BackendOptions;
+
+let backends = BackendOptions::default()
+    .repository("/path/to/repo")
+    .to_backends()?;
+
+let repo_opts = RepositoryOptions::default();
+let credentials = Credentials::password("my-password");
+
+let repo = Repository::new(&repo_opts, &backends)?
+    .open(&credentials)?
+    .to_indexed_ids()?;
+```
+
+### Create a backup
+
+Specify the source path(s) and create a snapshot:
+
+```rust
+let backup_opts = BackupOptions::default();
+let source = PathList::from_string("/data/to/backup")?.sanitize()?;
+let snap = SnapshotOptions::default().to_snapshot()?;
+
+// Create the backup
+let snapshot = repo.backup(&backup_opts, &source, snap)?;
+println!("Created snapshot: {}", snapshot.id);
+```
+
+### Add metadata to snapshots
+
+You can add tags, hostname, and description:
+
+```rust
+let snap = SnapshotOptions::default()
+    .add_tags("important,project-x")?  
+    .hostname("my-server")
+    .description("Daily backup")
+    .to_snapshot()?;
+
+let snapshot = repo.backup(&backup_opts, &source, snap)?;
+```
+
+</Steps>
+
+## Backup Multiple Paths
+
+Backup multiple directories in a single snapshot:
+
+```rust
+let paths = vec![
+    "/home/user/documents",
+    "/home/user/projects",
+    "/etc/config"
+];
+
+let source = PathList::from_iter(paths).sanitize()?;
+let snapshot = repo.backup(&backup_opts, &source, snap)?;
+```
+
+## Incremental Backups
+
+rustic_core automatically performs incremental backups using parent snapshots.
+
+### Using Parent Snapshots
+
+By default, rustic_core finds a suitable parent snapshot based on hostname, paths, and labels:
+
+```rust
+let backup_opts = BackupOptions::default();
+// Parent snapshot is automatically detected
+let snapshot = repo.backup(&backup_opts, &source, snap)?;
+```
+
+### Grouping Criteria
+
+Control how parent snapshots are selected:
+
+```rust
+use rustic_core::SnapshotGroupCriterion;
+
+let parent_opts = ParentOptions::default()
+    .group_by(SnapshotGroupCriterion::from_str("host,paths,tags")?);
+
+let backup_opts = BackupOptions::default().parent_opts(parent_opts);
+```
+
+### Explicit Parent
+
+Specify an explicit parent snapshot:
+
+```rust
+let parent_opts = ParentOptions::default()
+    .parents(vec!["a1b2c3d4".to_string()]); // Snapshot ID
+
+let backup_opts = BackupOptions::default().parent_opts(parent_opts);
+```
+
+### Force Full Backup
+
+Force a backup without using a parent (reads all files):
+
+```rust
+let parent_opts = ParentOptions::default().force(true);
+let backup_opts = BackupOptions::default().parent_opts(parent_opts);
+```
+
+## Filtering and Exclusions
+
+See `/home/daytona/workspace/source/crates/core/src/commands/backup.rs:186-199`
+
+### Exclude Patterns
+
+Exclude files matching glob patterns:
+
+```rust
+use rustic_core::Excludes;
+
+let excludes = Excludes::default()
+    .add_exclude("*.tmp")
+    .add_exclude("node_modules/")
+    .add_exclude(".git/");
+
+let backup_opts = BackupOptions::default().excludes(excludes);
+```
+
+### Exclude Files
+
+Use exclude files (like .gitignore):
+
+```rust
+let excludes = Excludes::default()
+    .add_exclude_file(".backupignore");
+```
+
+### Size Filtering
+
+Filter files by size:
+
+```rust
+use rustic_core::LocalSourceFilterOptions;
+
+let filter_opts = LocalSourceFilterOptions::default()
+    .glob(vec!["*.log".to_string()])
+    .iglob(vec!["*.jpg".to_string()]); // Case-insensitive
+
+let backup_opts = BackupOptions::default()
+    .ignore_filter_opts(filter_opts);
+```
+
+## Advanced Options
+
+### Skip Unchanged Snapshots
+
+Skip creating a snapshot if nothing has changed:
+
+```rust
+let parent_opts = ParentOptions::default()
+    .skip_if_unchanged(true);
+
+let backup_opts = BackupOptions::default().parent_opts(parent_opts);
+```
+
+### Ignore File Metadata Changes
+
+Ignore ctime or inode changes when detecting modifications:
+
+```rust
+let parent_opts = ParentOptions::default()
+    .ignore_ctime(true)   // Ignore change time
+    .ignore_inode(true);  // Ignore inode number changes
+```
+
+### Custom Backup Path
+
+Set a custom path in the snapshot metadata:
+
+```rust
+use std::path::PathBuf;
+
+let backup_opts = BackupOptions::default()
+    .as_path(PathBuf::from("/virtual/path"));
+```
+
+### Dry Run
+
+Test backup without writing data:
+
+```rust
+let backup_opts = BackupOptions::default().dry_run(true);
+let snapshot = repo.backup(&backup_opts, &source, snap)?;
+// No data is actually written to repository
+```
+
+### Disable Size Scanning
+
+Skip scanning for total size (disables ETA):
+
+```rust
+let backup_opts = BackupOptions::default().no_scan(true);
+```
+
+## Backing Up from stdin
+
+Backup data from stdin:
+
+```rust
+// Use "-" as the source path
+let source = PathList::from_string("-")?;
+let backup_opts = BackupOptions::default()
+    .stdin_filename("mydata.txt"); // Name for the stdin data
+
+let snapshot = repo.backup(&backup_opts, &source, snap)?;
+```
+
+### Backup Command Output
+
+Backup the output of a command:
+
+```rust
+use rustic_core::CommandInput;
+
+let source = PathList::from_string("-")?;
+let backup_opts = BackupOptions::default()
+    .stdin_command(CommandInput::from_str("mysqldump mydb")?)
+    .stdin_filename("database.sql");
+
+let snapshot = repo.backup(&backup_opts, &source, snap)?;
+```
+
+## Save Options
+
+Control how files are saved:
+
+```rust
+use rustic_core::LocalSourceSaveOptions;
+
+let save_opts = LocalSourceSaveOptions::default()
+    .save_opts(...); // Configure save behavior
+
+let backup_opts = BackupOptions::default()
+    .ignore_save_opts(save_opts);
+```
+
+## Common Scenarios
+
+### Daily Backup Script
+
+```rust
+use rustic_core::*;
+
+fn daily_backup() -> Result<(), Box<dyn std::error::Error>> {
+    let backends = BackendOptions::default()
+        .repository("/backup/repo")
+        .to_backends()?;
+    
+    let repo = Repository::new(&RepositoryOptions::default(), &backends)?
+        .open(&Credentials::from_file(".credentials"))?
+        .to_indexed_ids()?;
+    
+    let source = PathList::from_iter(vec![
+        "/home/user",
+        "/etc",
+    ]).sanitize()?;
+    
+    let excludes = Excludes::default()
+        .add_exclude("**/cache/**")
+        .add_exclude("**/.cache/**")
+        .add_exclude("**/tmp/**");
+    
+    let backup_opts = BackupOptions::default()
+        .excludes(excludes)
+        .parent_opts(ParentOptions::default().skip_if_unchanged(true));
+    
+    let snap = SnapshotOptions::default()
+        .add_tags("daily")?  
+        .description("Automated daily backup")
+        .to_snapshot()?;
+    
+    let snapshot = repo.backup(&backup_opts, &source, snap)?;
+    println!("Backup completed: {}", snapshot.id);
+    
+    Ok(())
+}
+```
+
+## See Also
+
+- [Repository Management](/guides/repository-management) - Check and verify backups
+- [Restore Guide](/guides/restore) - Restore files from backups  
+- [Configuration](/guides/configuration) - Repository configuration options
+- [BackupOptions API Reference](/api/backup)
+- [SnapshotOptions API Reference](/api/repofile/snapshotfile#snapshotoptions)

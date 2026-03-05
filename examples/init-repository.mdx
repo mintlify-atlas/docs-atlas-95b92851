@@ -1,0 +1,124 @@
+---
+title: Initialize a Repository
+description: Learn how to create and initialize a new rustic_core repository
+---
+
+This example demonstrates how to create a new backup repository from scratch. Initializing a repository sets up the necessary directory structure, generates encryption keys, and stores the repository configuration.
+
+## Complete Example
+
+```rust
+use rustic_backend::BackendOptions;
+use rustic_core::{
+    repofile::MasterKey, ConfigOptions, Credentials, KeyOptions, Repository, RepositoryOptions,
+};
+use simplelog::{Config, LevelFilter, SimpleLogger};
+use std::error::Error;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    // Display info logs
+    let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+
+    // Initialize Backends
+    let backends = BackendOptions::default()
+        .repository("/tmp/repo")
+        .to_backends()?;
+
+    // Init repository
+    let repo_opts = RepositoryOptions::default();
+    let key_opts = KeyOptions::default();
+    let config_opts = ConfigOptions::default();
+    let _repo = Repository::new(&repo_opts, &backends)?.init(
+        &Credentials::Masterkey(MasterKey::new()), // in real life, make sure you save this masterkey after generating it!
+        &key_opts,
+        &config_opts,
+    )?;
+
+    // -> use _repo for any operation on an open repository
+    Ok(())
+}
+```
+
+## Step-by-Step Explanation
+
+### 1. Set up logging
+
+```rust
+let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+```
+
+Initialize the logger to display informational messages during repository initialization. This helps track progress and debug issues.
+
+### 2. Configure the backend
+
+```rust
+let backends = BackendOptions::default()
+    .repository("/tmp/repo")
+    .to_backends()?;
+```
+
+Set up the storage backend where the repository data will be stored. This example uses a local filesystem path (`/tmp/repo`), but rustic_core supports various backends including S3, Azure, and more.
+
+### 3. Set repository options
+
+```rust
+let repo_opts = RepositoryOptions::default();
+let key_opts = KeyOptions::default();
+let config_opts = ConfigOptions::default();
+```
+
+Configure the repository, key, and config options. The defaults provide sensible values for most use cases.
+
+### 4. Initialize the repository
+
+```rust
+let _repo = Repository::new(&repo_opts, &backends)?.init(
+    &Credentials::Masterkey(MasterKey::new()),
+    &key_opts,
+    &config_opts,
+)?;
+```
+
+Create and initialize the repository with:
+- **Credentials**: A new master key for encryption (save this securely!)
+- **Key options**: How the encryption key is derived
+- **Config options**: Repository-specific configuration
+
+<Warning>
+  **Important**: When generating a new `MasterKey`, you must save it securely! Without the master key or password, you cannot access your backups. In production, use `Credentials::password()` for password-based authentication or save the master key to a secure location.
+</Warning>
+
+### 5. Use the repository
+
+Once initialized, the returned `_repo` object can be used for any repository operations like creating snapshots, restoring data, or checking integrity.
+
+## Expected Output
+
+When you run this example, you'll see log messages indicating the repository initialization progress:
+
+```
+INFO - initializing repository at /tmp/repo
+INFO - created new repository config
+INFO - generated master key
+INFO - repository successfully initialized
+```
+
+After successful initialization, the repository directory will contain:
+- `config` - Repository configuration file
+- `keys/` - Encryption keys directory
+- `data/`, `index/`, `snapshots/` - Data storage directories
+
+## Related API Documentation
+
+- [Repository](/api/repository) - Core repository operations
+- [BackendOptions](/api/backend-options) - Backend configuration
+- [RepositoryOptions](/api/repository-options) - Repository settings
+- [KeyOptions](/api/repository-options) - Encryption key options
+- [ConfigOptions](/api/repository-options) - Repository configuration
+
+## Next Steps
+
+After initializing a repository, you can:
+- [Create a snapshot](/examples/create-snapshot) to backup data
+- [Check the repository](/examples/check-repository) to verify integrity
+- Configure additional backends for hot/cold storage

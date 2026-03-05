@@ -1,0 +1,405 @@
+---
+title: Repository Configuration
+description: Learn how to configure rustic_core repositories
+---
+
+# Repository Configuration
+
+This guide covers how to configure rustic_core repositories, including initialization options, repository-wide settings, and environment variables.
+
+## Overview
+
+rustic_core repositories can be configured at multiple levels:
+- **Repository initialization** - Settings that determine the repository format
+- **Repository options** - Runtime options for accessing repositories
+- **Config file** - Repository-wide settings stored in the repository
+- **Environment variables** - Override settings from environment
+
+## Repository Initialization
+
+<Steps>
+
+### Initialize a New Repository
+
+```rust
+use rustic_core::{
+    Repository, RepositoryOptions, 
+    ConfigOptions, KeyOptions, Credentials,
+    repofile::MasterKey
+};
+use rustic_backend::BackendOptions;
+
+let backends = BackendOptions::default()
+    .repository("/path/to/repo")
+    .to_backends()?;
+
+let repo_opts = RepositoryOptions::default();
+let key_opts = KeyOptions::default();
+let config_opts = ConfigOptions::default();
+
+let repo = Repository::new(&repo_opts, &backends)?.init(
+    &Credentials::password("my-password"),
+    &key_opts,
+    &config_opts,
+)?;
+```
+
+### Using a Master Key
+
+Generate and save a master key for keyless access:
+
+```rust
+use rustic_core::repofile::MasterKey;
+
+// Generate a new master key
+let master_key = MasterKey::new();
+
+// IMPORTANT: Save this key securely!
+println!("Master key: {}", master_key.to_string());
+
+let repo = Repository::new(&repo_opts, &backends)?.init(
+    &Credentials::Masterkey(master_key),
+    &key_opts,
+    &config_opts,
+)?;
+```
+
+### Hot/Cold Repository
+
+Initialize a repository with hot and cold storage:
+
+```rust
+let backends = BackendOptions::default()
+    .repository("/cold/storage/repo")  // Cold storage (S3, archive, etc.)
+    .repo_hot("/hot/storage/repo")     // Hot storage (local SSD)
+    .to_backends()?;
+
+let repo = Repository::new(&repo_opts, &backends)?.init(
+    &credentials,
+    &key_opts,
+    &config_opts,
+)?;
+```
+
+</Steps>
+
+## Configuration Options
+
+See `/home/daytona/workspace/source/crates/core/src/commands/config.rs:119-212`
+
+### Repository Version
+
+```rust
+let config_opts = ConfigOptions::default()
+    .set_version(Some(2)); // Use repository version 2 (supports compression)
+```
+
+### Chunker Configuration
+
+```rust
+use rustic_core::Chunker;
+use bytesize::ByteSize;
+
+let config_opts = ConfigOptions::default()
+    .set_chunker(Some(Chunker::Rabin))  // Rabin chunker (default)
+    .set_chunk_size(Some(ByteSize::mib(1)))  // Average chunk size: 1 MiB
+    .set_chunk_min_size(Some(ByteSize::kib(512)))  // Min chunk: 512 KiB  
+    .set_chunk_max_size(Some(ByteSize::mib(8)));  // Max chunk: 8 MiB
+
+// Or use fixed-size chunker
+let config_opts = ConfigOptions::default()
+    .set_chunker(Some(Chunker::FixedSize))
+    .set_chunk_size(Some(ByteSize::mib(1)));
+```
+
+### Compression
+
+```rust
+// Set compression level (v2 repos only)
+// Levels: -7 to -1 (fast), 1 to 22 (max compression)
+// 0 = no compression
+let config_opts = ConfigOptions::default()
+    .set_compression(Some(3)); // Balanced compression
+
+// Maximum compression
+let config_opts = ConfigOptions::default()
+    .set_compression(Some(22));
+
+// Fast compression
+let config_opts = ConfigOptions::default()
+    .set_compression(Some(-1));
+```
+
+### Pack Sizes
+
+```rust
+use bytesize::ByteSize;
+
+// Configure data pack sizes
+let config_opts = ConfigOptions::default()
+    .set_datapack_size(Some(ByteSize::mib(32)))  // Default: 32 MiB
+    .set_datapack_size_limit(Some(ByteSize::gib(1)))  // Max: 1 GiB
+    .set_datapack_growfactor(Some(32));  // Growth factor
+
+// Configure tree pack sizes  
+let config_opts = ConfigOptions::default()
+    .set_treepack_size(Some(ByteSize::mib(4)))  // Default: 4 MiB
+    .set_treepack_size_limit(Some(ByteSize::mib(256)))  // Max: 256 MiB
+    .set_treepack_growfactor(Some(32));  // Growth factor
+```
+
+### Pack Size Tolerance
+
+```rust
+// Allow packs to be 30%-130% of target size
+let config_opts = ConfigOptions::default()
+    .set_min_packsize_tolerate_percent(Some(30))  // Min: 30% of target
+    .set_max_packsize_tolerate_percent(Some(130)); // Max: 130% of target
+
+// No upper limit (always tolerate larger packs)
+let config_opts = ConfigOptions::default()
+    .set_max_packsize_tolerate_percent(Some(0));
+```
+
+### Append-Only Mode
+
+```rust
+// Enable append-only mode (prevents deletion and modification)
+let config_opts = ConfigOptions::default()
+    .set_append_only(Some(true));
+
+// Note: Once enabled, you cannot run forget, prune, or modify config
+// without first disabling append-only mode
+```
+
+### Extra Verification
+
+```rust
+// Enable extra verification (decompress/decrypt before upload)
+let config_opts = ConfigOptions::default()
+    .set_extra_verify(Some(true));
+```
+
+## Modifying Repository Configuration
+
+Change settings on an existing repository:
+
+```rust
+let mut repo = Repository::new(&repo_opts, &backends)?
+    .open(&credentials)?;
+
+// Update configuration
+let config_opts = ConfigOptions::default()
+    .set_compression(Some(5))
+    .set_datapack_size(Some(ByteSize::mib(64)));
+
+let changed = repo.apply_config(&config_opts)?;
+if changed {
+    println!("Configuration updated");
+} else {
+    println!("No changes to configuration");
+}
+```
+
+## Repository Options
+
+See `/home/daytona/workspace/source/crates/core/src/repository.rs:88-147`
+
+Control how the repository is accessed:
+
+### Cache Configuration
+
+```rust
+use std::path::PathBuf;
+
+// Disable cache
+let repo_opts = RepositoryOptions::default()
+    .no_cache(true);
+
+// Use custom cache directory
+let repo_opts = RepositoryOptions::default()
+    .cache_dir(Some(PathBuf::from("/custom/cache")));
+```
+
+### Warm-Up Options
+
+Prefetch pack files for faster access:
+
+```rust
+use rustic_core::CommandInput;
+use jiff::SignedDuration;
+
+// Enable automatic warm-up
+let repo_opts = RepositoryOptions::default()
+    .warm_up(true);
+
+// Use custom warm-up command
+let repo_opts = RepositoryOptions::default()
+    .warm_up_command(Some(CommandInput::from_str("prefetch.sh %id")?));
+
+// Wait for warm-up completion
+let repo_opts = RepositoryOptions::default()
+    .warm_up_wait_command(Some(CommandInput::from_str("wait.sh %id")?))
+    .warm_up_wait(Some(SignedDuration::from_mins(5)));
+
+// Batch warm-up operations
+let repo_opts = RepositoryOptions::default()
+    .warm_up_command(Some(CommandInput::from_str("prefetch.sh %ids")?))
+    .warm_up_batch(Some(10));  // Process 10 packs at once
+```
+
+## Key Management
+
+### Add a New Key
+
+```rust
+use rustic_core::KeyOptions;
+
+// Add a new password-protected key
+let key_opts = KeyOptions::default();
+let new_key_id = repo.add_key(&Credentials::password("new-password"), &key_opts)?;
+println!("Added key: {}", new_key_id);
+```
+
+### Key Options
+
+```rust
+use rustic_core::KeyOptions;
+
+let key_opts = KeyOptions::default()
+    .hostname(Some("backup-server".to_string()))
+    .username(Some("admin".to_string()));
+
+repo.add_key(&credentials, &key_opts)?;
+```
+
+## Environment Variables
+
+rustic_core supports several environment variables:
+
+### Cache Settings
+
+```bash
+# Disable cache
+export RUSTIC_NO_CACHE=true
+
+# Custom cache directory
+export RUSTIC_CACHE_DIR=/custom/cache
+```
+
+### Password
+
+```bash
+# Set password via environment
+export RUSTIC_PASSWORD="my-password"
+
+# Or use password file
+export RUSTIC_PASSWORD_FILE=/secure/password.txt
+
+# Or use password command
+export RUSTIC_PASSWORD_COMMAND="pass show backup/repo"
+```
+
+### Repository Path
+
+```bash
+# Set repository path
+export RUSTIC_REPOSITORY=/path/to/repo
+
+# Or use specific backend
+export RUSTIC_REPOSITORY=s3:s3.amazonaws.com/my-bucket/repo
+```
+
+## Complete Configuration Example
+
+```rust
+use rustic_core::*;
+use rustic_backend::BackendOptions;
+use bytesize::ByteSize;
+
+fn initialize_optimized_repo() -> Result<Repository<Open>, Box<dyn std::error::Error>> {
+    // Backend configuration
+    let backends = BackendOptions::default()
+        .repository("/backup/repo")
+        .to_backends()?;
+    
+    // Repository options (runtime)
+    let repo_opts = RepositoryOptions::default()
+        .cache_dir(Some(PathBuf::from("/fast/cache")))
+        .warm_up(true);
+    
+    // Configuration options (repository format)
+    let config_opts = ConfigOptions::default()
+        .set_version(Some(2))  // V2 for compression support
+        .set_compression(Some(3))  // Moderate compression
+        .set_chunker(Some(Chunker::Rabin))
+        .set_chunk_size(Some(ByteSize::mib(1)))
+        .set_chunk_min_size(Some(ByteSize::kib(512)))
+        .set_chunk_max_size(Some(ByteSize::mib(8)))
+        .set_datapack_size(Some(ByteSize::mib(32)))
+        .set_datapack_growfactor(Some(32))
+        .set_datapack_size_limit(Some(ByteSize::gib(2)))
+        .set_treepack_size(Some(ByteSize::mib(4)))
+        .set_treepack_growfactor(Some(32))
+        .set_min_packsize_tolerate_percent(Some(30))
+        .set_max_packsize_tolerate_percent(Some(0))  // No upper limit
+        .set_extra_verify(Some(true));  // Extra safety
+    
+    // Key options
+    let key_opts = KeyOptions::default();
+    
+    // Initialize repository
+    let repo = Repository::new(&repo_opts, &backends)?.init(
+        &Credentials::password("secure-password"),
+        &key_opts,
+        &config_opts,
+    )?;
+    
+    Ok(repo)
+}
+```
+
+## Configuration Best Practices
+
+### For Fast Backups
+
+```rust
+let config_opts = ConfigOptions::default()
+    .set_compression(Some(-1))  // Fastest compression
+    .set_chunk_size(Some(ByteSize::mib(2)))  // Larger chunks
+    .set_datapack_size(Some(ByteSize::mib(64)));  // Larger packs
+```
+
+### For Maximum Compression
+
+```rust
+let config_opts = ConfigOptions::default()
+    .set_compression(Some(22))  // Maximum compression
+    .set_chunk_size(Some(ByteSize::kib(512)))  // Smaller chunks
+    .set_extra_verify(Some(true));  // Verify data
+```
+
+### For Large Files
+
+```rust
+let config_opts = ConfigOptions::default()
+    .set_chunk_size(Some(ByteSize::mib(4)))  // Larger average chunk
+    .set_chunk_max_size(Some(ByteSize::mib(16)))  // Larger max chunk
+    .set_datapack_size(Some(ByteSize::mib(128)));  // Larger packs
+```
+
+### For Many Small Files
+
+```rust
+let config_opts = ConfigOptions::default()
+    .set_chunk_size(Some(ByteSize::kib(256)))  // Smaller chunks
+    .set_treepack_size(Some(ByteSize::mib(8)))  // Larger tree packs
+    .set_datapack_size(Some(ByteSize::mib(16)));  // Smaller data packs
+```
+
+## See Also
+
+- [Backend Setup](/guides/backends-setup) - Configure storage backends
+- [Backup Guide](/guides/backup) - Use configured repositories
+- [ConfigOptions API Reference](/api/repository-options)
+- [RepositoryOptions API Reference](/api/repository-options)

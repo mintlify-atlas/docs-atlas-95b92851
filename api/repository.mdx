@@ -1,0 +1,477 @@
+---
+title: Repository
+description: Core repository type for all rustic operations
+---
+
+The `Repository` struct is the central type in rustic_core for interacting with backup repositories. It manages the backend storage, encryption keys, and repository state.
+
+## Overview
+
+A repository can be in different states, each allowing specific operations:
+
+- **Uninitialized** (`Repository<()>`) - Newly created, not yet opened
+- **Open** (`Repository<OpenStatus>`) - Password verified, ready for basic operations
+- **IndexedIds** (`Repository<IndexedIdsStatus>`) - Indexed for backup operations
+- **IndexedFull** (`Repository<IndexedFullStatus>`) - Fully indexed for all operations
+- **IndexedTree** (`Repository<IndexedTreeStatus>`) - Tree-only index for memory efficiency
+
+## Type Definition
+
+```rust
+pub struct Repository<S> {
+    pub name: String,
+    // Internal fields
+}
+```
+
+<ParamField path="name" type="String">
+  The name/location identifier of the repository
+</ParamField>
+
+<ParamField path="S" type="State Type Parameter">
+  Generic type parameter representing the repository's current state
+</ParamField>
+
+## Creating a Repository
+
+### new
+
+Create a new repository instance without progress bars.
+
+```rust
+pub fn new(
+    opts: &RepositoryOptions,
+    backends: &RepositoryBackends
+) -> RusticResult<Repository<()>>
+```
+
+<ParamField path="opts" type="&RepositoryOptions" required>
+  Configuration options for the repository
+</ParamField>
+
+<ParamField path="backends" type="&RepositoryBackends" required>
+  Backend storage configuration (local, REST, S3, etc.)
+</ParamField>
+
+**Example:**
+
+```rust
+use rustic_core::{Repository, RepositoryOptions};
+use rustic_backend::BackendOptions;
+
+let backends = BackendOptions::default()
+    .repository("/tmp/repo")
+    .to_backends()?;
+
+let repo = Repository::new(&RepositoryOptions::default(), &backends)?;
+```
+
+### new_with_progress
+
+Create a new repository with custom progress bars.
+
+```rust
+pub fn new_with_progress<P: ProgressBars>(
+    opts: &RepositoryOptions,
+    backends: &RepositoryBackends,
+    pb: P
+) -> RusticResult<Repository<()>>
+```
+
+<ParamField path="pb" type="P: ProgressBars" required>
+  Progress bar implementation for operation feedback
+</ParamField>
+
+## Initializing a Repository
+
+### init
+
+Initialize a new repository with credentials and configuration.
+
+```rust
+pub fn init(
+    self,
+    credentials: &Credentials,
+    key_opts: &KeyOptions,
+    config_opts: &ConfigOptions
+) -> RusticResult<Repository<OpenStatus>>
+```
+
+<ParamField path="credentials" type="&Credentials" required>
+  Password or master key for repository encryption
+</ParamField>
+
+<ParamField path="key_opts" type="&KeyOptions" required>
+  Key generation options (encryption parameters)
+</ParamField>
+
+<ParamField path="config_opts" type="&ConfigOptions" required>
+  Repository configuration (version, compression, chunking)
+</ParamField>
+
+**Example:**
+
+```rust
+use rustic_core::{
+    Repository, RepositoryOptions, Credentials,
+    KeyOptions, ConfigOptions, repofile::MasterKey
+};
+
+let repo = Repository::new(&RepositoryOptions::default(), &backends)?;
+let repo = repo.init(
+    &Credentials::Masterkey(MasterKey::new()),
+    &KeyOptions::default(),
+    &ConfigOptions::default()
+)?;
+```
+
+### init_with_config
+
+Initialize with a pre-configured `ConfigFile`.
+
+```rust
+pub fn init_with_config(
+    self,
+    credentials: &Credentials,
+    key_opts: &KeyOptions,
+    config: ConfigFile
+) -> RusticResult<Repository<OpenStatus>>
+```
+
+## Opening a Repository
+
+### open
+
+Open an existing repository with credentials.
+
+```rust
+pub fn open(
+    self,
+    credentials: &Credentials
+) -> RusticResult<Repository<OpenStatus>>
+```
+
+**Example:**
+
+```rust
+let credentials = Credentials::password("my-password");
+let repo = Repository::new(&repo_opts, &backends)?
+    .open(&credentials)?;
+```
+
+### open_only_cold
+
+Open using only the cold (main) repository, ignoring hot storage.
+
+```rust
+pub fn open_only_cold(
+    self,
+    credentials: &Credentials
+) -> RusticResult<Repository<OpenStatus>>
+```
+
+## State Transitions
+
+### to_indexed
+
+Transition to fully indexed state for all operations.
+
+```rust
+pub fn to_indexed(self) -> RusticResult<Repository<IndexedFullStatus>>
+```
+
+This reads and stores the complete index in memory, enabling all repository operations but consuming more memory.
+
+### to_indexed_ids
+
+Transition to ID-only indexed state for backup operations.
+
+```rust
+pub fn to_indexed_ids(self) -> RusticResult<Repository<IndexedIdsStatus>>
+```
+
+This is more memory-efficient and sufficient for backup operations.
+
+**Example:**
+
+```rust
+let repo = Repository::new(&repo_opts, &backends)?
+    .open(&credentials)?
+    .to_indexed_ids()?;
+
+// Now ready for backup operations
+let snap = repo.backup(&backup_opts, &source, snap)?;
+```
+
+### to_indexed_checked
+
+Transition to indexed state with pack file verification.
+
+```rust
+pub fn to_indexed_checked(self) -> RusticResult<Repository<IndexedFullStatus>>
+```
+
+Reads pack headers for missing index entries before indexing.
+
+### drop_index
+
+Drop the index and return to `Open` state.
+
+```rust
+pub fn drop_index(self) -> Repository<OpenStatus>
+```
+
+## Repository Operations
+
+### Snapshots
+
+#### get_all_snapshots
+
+```rust
+pub fn get_all_snapshots(&self) -> RusticResult<Vec<SnapshotFile>>
+```
+
+Retrieve all snapshots from the repository.
+
+#### get_snapshot_from_str
+
+```rust
+pub fn get_snapshot_from_str(
+    &self,
+    id: &str,
+    filter: impl FnMut(&SnapshotFile) -> bool + Send + Sync
+) -> RusticResult<SnapshotFile>
+```
+
+<ParamField path="id" type="&str" required>
+  Snapshot ID, "latest", or "latest~N" for Nth latest snapshot
+</ParamField>
+
+<ParamField path="filter" type="Filter Function" required>
+  Function to filter snapshots (e.g., by host, tags, paths)
+</ParamField>
+
+#### delete_snapshots
+
+```rust
+pub fn delete_snapshots(&self, ids: &[SnapshotId]) -> RusticResult<()>
+```
+
+Remove snapshots from the repository (fails if append-only mode is enabled).
+
+### Maintenance
+
+#### check
+
+Verify repository integrity.
+
+```rust
+pub fn check(&self, opts: CheckOptions) -> RusticResult<CheckResults>
+```
+
+#### prune_plan
+
+Generate a pruning plan.
+
+```rust
+pub fn prune_plan(&self, opts: &PruneOptions) -> RusticResult<PrunePlan>
+```
+
+#### prune
+
+Execute repository pruning.
+
+```rust
+pub fn prune(
+    &self,
+    opts: &PruneOptions,
+    prune_plan: PrunePlan
+) -> RusticResult<()>
+```
+
+### Configuration
+
+#### config
+
+Get the repository configuration.
+
+```rust
+pub fn config(&self) -> &ConfigFile
+```
+
+#### apply_config
+
+Update repository configuration.
+
+```rust
+pub fn apply_config(&mut self, opts: &ConfigOptions) -> RusticResult<bool>
+```
+
+### Keys
+
+#### add_key
+
+Add a new access key to the repository.
+
+```rust
+pub fn add_key(&self, pass: &str, opts: &KeyOptions) -> RusticResult<KeyId>
+```
+
+#### delete_key
+
+Remove an access key (cannot remove the currently used key).
+
+```rust
+pub fn delete_key(&self, id: &KeyId) -> RusticResult<()>
+```
+
+#### key_id
+
+Get the ID of the currently used key.
+
+```rust
+pub fn key_id(&self) -> &Option<KeyId>
+```
+
+### Trees and Files
+
+#### get_tree
+
+Retrieve a tree by ID.
+
+```rust
+pub fn get_tree(&self, id: &TreeId) -> RusticResult<Tree>
+```
+
+Available only in `IndexedTree` state and above.
+
+#### node_from_path
+
+Get a node from a tree and path.
+
+```rust
+pub fn node_from_path(
+    &self,
+    root_tree: TreeId,
+    path: &Path
+) -> RusticResult<Node>
+```
+
+#### node_from_snapshot_path
+
+Get a node using "SNAP[:PATH]" syntax.
+
+```rust
+pub fn node_from_snapshot_path(
+    &self,
+    snap_path: &str,
+    filter: impl FnMut(&SnapshotFile) -> bool + Send + Sync
+) -> RusticResult<Node>
+```
+
+**Example:**
+
+```rust
+// Get a specific file from a snapshot
+let node = repo.node_from_snapshot_path(
+    "latest:/path/to/file.txt",
+    |_| true
+)?;
+```
+
+#### open_file
+
+Open a file for reading (requires `IndexedFull` state).
+
+```rust
+pub fn open_file(&self, node: &Node) -> RusticResult<OpenFile>
+```
+
+#### read_file_at
+
+Read file contents at a specific offset.
+
+```rust
+pub fn read_file_at(
+    &self,
+    open_file: &OpenFile,
+    offset: usize,
+    length: usize
+) -> RusticResult<Bytes>
+```
+
+## Progress Tracking
+
+```rust
+pub fn progress_counter(&self, prefix: &str) -> Progress
+pub fn progress_bytes(&self, prefix: &str) -> Progress
+pub fn progress_spinner(&self, prefix: &str) -> Progress
+pub fn progress_hidden(&self) -> Progress
+```
+
+Create progress indicators for long-running operations.
+
+## Repair Operations
+
+### repair_index
+
+```rust
+pub fn repair_index(
+    &self,
+    opts: &RepairIndexOptions,
+    dry_run: bool
+) -> RusticResult<()>
+```
+
+Repair the repository index by comparing with pack files.
+
+### repair_hotcold_packs
+
+```rust
+pub fn repair_hotcold_packs(&self, dry_run: bool) -> RusticResult<()>
+```
+
+Sync pack files between hot and cold repository parts.
+
+## Complete Example
+
+```rust
+use rustic_backend::BackendOptions;
+use rustic_core::{
+    Repository, RepositoryOptions, Credentials,
+    BackupOptions, PathList, SnapshotOptions
+};
+
+// Set up backend
+let backends = BackendOptions::default()
+    .repository("/tmp/repo")
+    .to_backends()?;
+
+// Open repository
+let repo = Repository::new(&RepositoryOptions::default(), &backends)?
+    .open(&Credentials::password("my-password"))?
+    .to_indexed_ids()?;
+
+// Perform backup
+let source = PathList::from_string(".")?.sanitize()?;
+let snap = SnapshotOptions::default()
+    .add_tags("daily,important")?
+    .to_snapshot()?;
+
+let snapshot = repo.backup(&BackupOptions::default(), &source, snap)?;
+println!("Created snapshot: {}", snapshot.id);
+
+// Check repository
+let results = repo.drop_index()
+    .to_indexed()?
+    .check(CheckOptions::default())?;
+
+println!("Check complete: {:?}", results);
+```
+
+## See Also
+
+- [RepositoryOptions](/api/repository-options) - Repository configuration
+- [Credentials](/api/credentials) - Authentication methods
+- [ConfigFile](/api/repofile#configfile) - Repository settings
+- [SnapshotFile](/api/repofile#snapshotfile) - Snapshot metadata

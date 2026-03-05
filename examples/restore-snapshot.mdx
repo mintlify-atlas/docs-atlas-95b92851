@@ -1,0 +1,239 @@
+---
+title: Restore a Snapshot
+description: Learn how to restore data from a backup snapshot using rustic_core
+---
+
+This example demonstrates how to restore files and directories from a backup snapshot. You can restore entire snapshots or specific files and directories.
+
+## Complete Example
+
+```rust
+use rustic_backend::BackendOptions;
+use rustic_core::{
+    Credentials, LocalDestination, LsOptions, Repository, RepositoryOptions, RestoreOptions,
+};
+use simplelog::{Config, LevelFilter, SimpleLogger};
+use std::error::Error;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    // Display info logs
+    let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+
+    // Initialize Backends
+    let backends = BackendOptions::default()
+        .repository("/tmp/repo")
+        .to_backends()?;
+
+    // Open repository
+    let repo_opts = RepositoryOptions::default();
+    let repo = Repository::new(&repo_opts, &backends)?
+        .open(&Credentials::password("test"))?
+        .to_indexed()?;
+
+    // use latest snapshot without filtering snapshots
+    let node = repo.node_from_snapshot_path("latest", |_| true)?;
+
+    // use list of the snapshot contents using no additional filtering
+    let streamer_opts = LsOptions::default();
+    let ls = repo.ls(&node, &streamer_opts)?;
+
+    let destination = "./restore/"; // restore to this destination dir
+    let create = true; // create destination dir, if it doesn't exist
+    let dest = LocalDestination::new(destination, create, !node.is_dir())?;
+
+    let opts = RestoreOptions::default();
+    let dry_run = false;
+    // create restore infos. Note: this also already creates needed dirs in the destination
+    let restore_infos = repo.prepare_restore(&opts, ls.clone(), &dest, dry_run)?;
+
+    repo.restore(restore_infos, &opts, ls, &dest)?;
+    Ok(())
+}
+```
+
+## Step-by-Step Explanation
+
+### 1. Set up logging
+
+```rust
+let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+```
+
+Enable logging to track restore progress, including files being restored and any errors encountered.
+
+### 2. Configure the backend
+
+```rust
+let backends = BackendOptions::default()
+    .repository("/tmp/repo")
+    .to_backends()?;
+```
+
+Connect to the repository backend where your snapshots are stored.
+
+### 3. Open and index the repository
+
+```rust
+let repo_opts = RepositoryOptions::default();
+let repo = Repository::new(&repo_opts, &backends)?
+    .open(&Credentials::password("test"))?
+    .to_indexed()?;
+```
+
+Open the repository with authentication and build an index of all data blobs. The `to_indexed()` method creates an index for efficient data retrieval during restore.
+
+### 4. Select the snapshot to restore
+
+```rust
+let node = repo.node_from_snapshot_path("latest", |_| true)?;
+```
+
+Choose which snapshot and path to restore:
+- **"latest"**: Most recent snapshot (can also use snapshot ID or timestamp)
+- **Filter function**: `|_| true` accepts all snapshots; customize to filter by tags, hostname, etc.
+
+You can also specify a path within the snapshot:
+```rust
+let node = repo.node_from_snapshot_path("latest:/path/to/file", |_| true)?;
+```
+
+### 5. List snapshot contents
+
+```rust
+let streamer_opts = LsOptions::default();
+let ls = repo.ls(&node, &streamer_opts)?;
+```
+
+Generate a list of all files and directories in the snapshot (or selected subtree). This creates a stream of file metadata needed for restore.
+
+### 6. Configure the destination
+
+```rust
+let destination = "./restore/";
+let create = true;
+let dest = LocalDestination::new(destination, create, !node.is_dir())?;
+```
+
+Set up the restore destination:
+- **destination**: Target directory for restored files
+- **create**: Create the destination if it doesn't exist
+- **!node.is_dir()**: Special handling when restoring a single file
+
+### 7. Prepare the restore
+
+```rust
+let opts = RestoreOptions::default();
+let dry_run = false;
+let restore_infos = repo.prepare_restore(&opts, ls.clone(), &dest, dry_run)?;
+```
+
+Prepare the restore operation:
+- Analyzes what needs to be restored
+- Creates necessary directories in the destination
+- Plans the restore order for optimal performance
+- **dry_run**: Set to `true` to see what would be restored without actually doing it
+
+### 8. Execute the restore
+
+```rust
+repo.restore(restore_infos, &opts, ls, &dest)?;
+```
+
+Perform the actual restore:
+- Downloads required data chunks from the backend
+- Decrypts and decompresses data
+- Writes files to the destination
+- Restores file permissions and timestamps
+
+## Expected Output
+
+During restore, you'll see progress information:
+
+```
+INFO - opening repository at /tmp/repo
+INFO - loading snapshot latest
+INFO - snapshot a1b2c3d4 from 2024-03-15T10:30:00Z
+INFO - preparing restore to ./restore/
+INFO - created 45 directories
+INFO - restoring 1,234 files (45.2 MB)
+INFO - restored: 100/1234 files (8.1 MB)
+INFO - restored: 500/1234 files (22.5 MB)
+INFO - restored: 1234/1234 files (45.2 MB)
+INFO - restore completed successfully
+```
+
+The restored files will be in the destination directory with their original:
+- File contents
+- Directory structure
+- Permissions and attributes
+- Timestamps (if supported by the filesystem)
+
+## Advanced Usage
+
+### Restore specific files or directories
+
+```rust
+// Restore only a specific subdirectory
+let node = repo.node_from_snapshot_path("latest:/home/user/documents", |_| true)?;
+```
+
+### Filter files during restore
+
+```rust
+let streamer_opts = LsOptions::default()
+    .glob("*.txt")?
+    .glob("!*.tmp")?;
+```
+
+### Select snapshot by tag or ID
+
+```rust
+// Filter by tag
+let node = repo.node_from_snapshot_path(
+    "latest",
+    |snap| snap.tags.contains(&"important".to_string())
+)?;
+
+// Use specific snapshot ID
+let node = repo.node_from_snapshot_path("a1b2c3d4", |_| true)?;
+```
+
+### Dry run to preview restore
+
+```rust
+let dry_run = true;
+let restore_infos = repo.prepare_restore(&opts, ls.clone(), &dest, dry_run)?;
+// Inspect restore_infos to see what would be restored
+println!("Would restore {} files", restore_infos.len());
+```
+
+## Error Handling
+
+Common errors and how to handle them:
+
+```rust
+match repo.restore(restore_infos, &opts, ls, &dest) {
+    Ok(_) => println!("Restore completed successfully"),
+    Err(e) => {
+        eprintln!("Restore failed: {}", e);
+        // Possible errors:
+        // - Permission denied on destination
+        // - Insufficient disk space
+        // - Network error accessing backend
+        // - Corrupted data in repository
+    }
+}
+```
+
+## Related API Documentation
+
+- [RestoreOptions](/api/restore-options) - Configure restore behavior
+- [LocalDestination](/api/restore) - Local filesystem destination
+- [LsOptions](/api/restore) - List and filter snapshot contents
+- [Repository::restore()](/api/restore) - Restore operation
+
+## Next Steps
+
+- [Check repository](/examples/check-repository) to verify data integrity before restore
+- [List snapshots](/api/snapshots) to find the right backup
+- Learn about [selective restore](/guides/restore#partial-restore) for advanced filtering

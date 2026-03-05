@@ -1,0 +1,383 @@
+---
+title: Restoring Snapshots
+description: Learn how to restore data from rustic_core snapshots
+---
+
+# Restoring Snapshots
+
+This guide covers how to restore files and directories from rustic_core snapshots, including full restores, partial restores, and advanced restore options.
+
+## Overview
+
+rustic_core provides efficient restore capabilities that can:
+- Restore entire snapshots or specific paths
+- Verify existing files and skip unchanged data
+- Preserve file metadata (permissions, ownership, timestamps)
+- Remove extraneous files from the restore destination
+
+## Basic Restore
+
+<Steps>
+
+### Open the repository
+
+First, open your repository with indexed support:
+
+```rust
+use rustic_core::{
+    Repository, RepositoryOptions, Credentials,
+    RestoreOptions, LocalDestination, LsOptions
+};
+use rustic_backend::BackendOptions;
+
+let backends = BackendOptions::default()
+    .repository("/path/to/repo")
+    .to_backends()?;
+
+let repo = Repository::new(&RepositoryOptions::default(), &backends)?
+    .open(&Credentials::password("my-password"))?
+    .to_indexed()?;
+```
+
+### Select a snapshot
+
+Choose the snapshot to restore:
+
+```rust
+// Use the latest snapshot
+let node = repo.node_from_snapshot_path("latest", |_| true)?;
+
+// Or use a specific snapshot ID
+let node = repo.node_from_snapshot_path("a1b2c3d4", |_| true)?;
+
+// Or filter snapshots
+let node = repo.node_from_snapshot_path("latest", |snap| {
+    snap.tags.contains(&"important".to_string())
+})?;
+```
+
+### List snapshot contents
+
+Create a file streamer for the snapshot:
+
+```rust
+let ls_opts = LsOptions::default();
+let ls = repo.ls(&node, &ls_opts)?;
+```
+
+### Prepare the destination
+
+```rust
+let destination = "./restore/";
+let create = true; // Create destination if it doesn't exist
+let dest = LocalDestination::new(destination, create, !node.is_dir())?;
+```
+
+### Restore the files
+
+```rust
+let opts = RestoreOptions::default();
+let dry_run = false;
+
+// Prepare restore (scans destination, creates directories)
+let restore_plan = repo.prepare_restore(&opts, ls.clone(), &dest, dry_run)?;
+
+// Execute the restore
+repo.restore(restore_plan, &opts, ls, &dest)?;
+```
+
+</Steps>
+
+## Restore Options
+
+See `/home/daytona/workspace/source/crates/core/src/commands/restore.rs:40-65`
+
+### Delete Extra Files
+
+Remove files in the destination that aren't in the snapshot:
+
+```rust
+let opts = RestoreOptions::default().delete(true);
+// WARNING: Use with care! Consider using dry_run first
+```
+
+### Ownership Handling
+
+```rust
+// Restore using numeric IDs instead of user/group names
+let opts = RestoreOptions::default().numeric_id(true);
+
+// Don't restore ownership at all
+let opts = RestoreOptions::default().no_ownership(true);
+```
+
+### Verify Existing Files
+
+Always verify existing files instead of trusting modification time:
+
+```rust
+let opts = RestoreOptions::default().verify_existing(true);
+```
+
+## Partial Restore
+
+### Restore Specific Path
+
+Restore only a specific file or directory:
+
+```rust
+// Navigate to specific path in snapshot
+let node = repo.node_from_snapshot_path(
+    "latest:/path/in/snapshot",
+    |_| true
+)?;
+
+let ls_opts = LsOptions::default();
+let ls = repo.ls(&node, &ls_opts)?;
+
+let dest = LocalDestination::new("./restore/", true, !node.is_dir())?;
+let restore_plan = repo.prepare_restore(&RestoreOptions::default(), ls.clone(), &dest, false)?;
+repo.restore(restore_plan, &RestoreOptions::default(), ls, &dest)?;
+```
+
+### Filter During Restore
+
+Use `LsOptions` to filter what gets restored:
+
+```rust
+use rustic_core::TreeStreamerOptions;
+
+let ls_opts = LsOptions::default()
+    .glob(vec!["*.txt".to_string()]); // Only restore .txt files
+
+let ls = repo.ls(&node, &ls_opts)?;
+```
+
+## Advanced Restore Scenarios
+
+### Dry Run Mode
+
+Test a restore without actually writing files:
+
+```rust
+let dry_run = true;
+let restore_plan = repo.prepare_restore(
+    &RestoreOptions::default(),
+    ls.clone(),
+    &dest,
+    dry_run
+)?;
+
+// Inspect what would be restored
+println!("Files to restore: {}", restore_plan.stats.files.restore);
+println!("Files unchanged: {}", restore_plan.stats.files.unchanged);
+```
+
+### Restore to Single File
+
+Restore a single file from a snapshot:
+
+```rust
+let node = repo.node_from_snapshot_path(
+    "latest:/path/to/file.txt",
+    |_| true
+)?;
+
+let dest = LocalDestination::new(
+    "./restored-file.txt",
+    true,
+    true  // expect_file = true
+)?;
+
+let ls_opts = LsOptions::default();
+let ls = repo.ls(&node, &ls_opts)?;
+
+let restore_plan = repo.prepare_restore(&RestoreOptions::default(), ls.clone(), &dest, false)?;
+repo.restore(restore_plan, &RestoreOptions::default(), ls, &dest)?;
+```
+
+### Incremental Restore
+
+Restore only files that have changed or are missing:
+
+```rust
+// By default, rustic_core checks existing files
+let opts = RestoreOptions::default();
+
+// Files with correct size and mtime are skipped
+let restore_plan = repo.prepare_restore(&opts, ls.clone(), &dest, false)?;
+
+// Statistics show what was skipped
+println!("Restored: {}", restore_plan.stats.files.restore);
+println!("Unchanged: {}", restore_plan.stats.files.unchanged);
+println!("Verified: {}", restore_plan.stats.files.verified);
+```
+
+## Restore Statistics
+
+The restore plan provides detailed statistics:
+
+```rust
+let restore_plan = repo.prepare_restore(&opts, ls.clone(), &dest, false)?;
+
+let stats = restore_plan.stats;
+println!("File statistics:");
+println!("  To restore: {}", stats.files.restore);
+println!("  Unchanged: {}", stats.files.unchanged);
+println!("  Verified: {}", stats.files.verified);
+println!("  Modified: {}", stats.files.modify);
+println!("  Additional: {}", stats.files.additional);
+
+println!("\nDirectory statistics:");
+println!("  To restore: {}", stats.dirs.restore);
+println!("  Modified: {}", stats.dirs.modify);
+
+println!("\nData size:");
+println!("  To restore: {} bytes", restore_plan.restore_size);
+println!("  Matched (skipped): {} bytes", restore_plan.matched_size);
+```
+
+## Metadata Restoration
+
+See `/home/daytona/workspace/source/crates/core/src/commands/restore.rs:336-421`
+
+rustic_core restores file metadata in a specific order:
+
+1. **File permissions** - Set via `chmod`
+2. **Extended attributes** - Platform-specific attributes
+3. **Ownership** - User and group (if not disabled)
+4. **Timestamps** - Access and modification times
+5. **Directory metadata** - Set after all contents are restored
+
+Metadata is set according to the `RestoreOptions`:
+
+```rust
+let opts = RestoreOptions::default()
+    .numeric_id(false)    // Use names, not numeric IDs
+    .no_ownership(false); // Restore ownership
+```
+
+## Common Restore Patterns
+
+### Complete Disaster Recovery
+
+```rust
+use rustic_core::*;
+
+fn disaster_recovery() -> Result<(), Box<dyn std::error::Error>> {
+    let backends = BackendOptions::default()
+        .repository("/backup/repo")
+        .to_backends()?;
+    
+    let repo = Repository::new(&RepositoryOptions::default(), &backends)?
+        .open(&Credentials::password("password"))?
+        .to_indexed()?;
+    
+    // Use latest snapshot
+    let node = repo.node_from_snapshot_path("latest", |_| true)?;
+    let ls = repo.ls(&node, &LsOptions::default())?;
+    
+    // Restore to system root (requires root privileges)
+    let dest = LocalDestination::new("/", true, false)?;
+    
+    let opts = RestoreOptions::default()
+        .delete(true)  // Remove files not in snapshot
+        .verify_existing(true);  // Verify all files
+    
+    // Dry run first to check what will happen
+    let plan = repo.prepare_restore(&opts, ls.clone(), &dest, true)?;
+    println!("Will restore {} files", plan.stats.files.restore);
+    println!("Will delete {} extra files", plan.stats.files.additional);
+    
+    // Uncomment to perform actual restore:
+    // let plan = repo.prepare_restore(&opts, ls.clone(), &dest, false)?;
+    // repo.restore(plan, &opts, ls, &dest)?;
+    
+    Ok(())
+}
+```
+
+### Selective File Restore
+
+```rust
+fn restore_config_files() -> Result<(), Box<dyn std::error::Error>> {
+    let repo = /* ... open repo ... */;
+    
+    // Restore only from /etc directory
+    let node = repo.node_from_snapshot_path("latest:/etc", |_| true)?;
+    
+    // Filter for specific config files
+    let ls_opts = LsOptions::default()
+        .glob(vec![
+            "*.conf".to_string(),
+            "*.cfg".to_string(),
+        ]);
+    
+    let ls = repo.ls(&node, &ls_opts)?;
+    let dest = LocalDestination::new("./configs/", true, false)?;
+    
+    let plan = repo.prepare_restore(&RestoreOptions::default(), ls.clone(), &dest, false)?;
+    repo.restore(plan, &RestoreOptions::default(), ls, &dest)?;
+    
+    Ok(())
+}
+```
+
+### Restore with Progress Tracking
+
+```rust
+use rustic_core::ProgressBars;
+
+fn restore_with_progress() -> Result<(), Box<dyn std::error::Error>> {
+    // Create repository with progress bars
+    let repo = Repository::new_with_progress(
+        &RepositoryOptions::default(),
+        &backends,
+        MyProgressBars::new()  // Your ProgressBars implementation
+    )?
+    .open(&credentials)?
+    .to_indexed()?;
+    
+    let node = repo.node_from_snapshot_path("latest", |_| true)?;
+    let ls = repo.ls(&node, &LsOptions::default())?;
+    let dest = LocalDestination::new("./restore/", true, false)?;
+    
+    // Progress bars will show:
+    // - File collection progress  
+    // - Pack file warm-up progress
+    // - Restore progress (bytes restored)
+    // - Metadata setting progress
+    let plan = repo.prepare_restore(&RestoreOptions::default(), ls.clone(), &dest, false)?;
+    repo.restore(plan, &RestoreOptions::default(), ls, &dest)?;
+    
+    Ok(())
+}
+```
+
+## Error Handling
+
+Handle common restore errors:
+
+```rust
+match repo.restore(plan, &opts, ls, &dest) {
+    Ok(_) => println!("Restore completed successfully"),
+    Err(e) => {
+        match e.kind() {
+            ErrorKind::InputOutput => {
+                eprintln!("I/O error during restore: {}", e);
+            },
+            ErrorKind::Permission => {
+                eprintln!("Permission denied. Try running with elevated privileges.");
+            },
+            _ => eprintln!("Restore failed: {}", e),
+        }
+    }
+}
+```
+
+## See Also
+
+- [Backup Guide](/guides/backup) - Create snapshots to restore from
+- [Configuration](/guides/configuration) - Repository configuration
+- [RestoreOptions API Reference](/api/commands/restore#restoreoptions)
+- [LocalDestination API Reference](/api/restore)

@@ -1,0 +1,301 @@
+---
+title: RepositoryOptions
+description: Configuration options for opening and using a rustic repository
+---
+
+`RepositoryOptions` configures how rustic accesses and interacts with a repository, including caching, warm-up strategies, and performance tuning.
+
+## Type Definition
+
+```rust
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Setters)]
+pub struct RepositoryOptions {
+    pub no_cache: bool,
+    pub cache_dir: Option<PathBuf>,
+    pub warm_up: bool,
+    pub warm_up_command: Option<CommandInput>,
+    pub warm_up_wait_command: Option<CommandInput>,
+    pub warm_up_wait: Option<SignedDuration>,
+    pub warm_up_batch: Option<usize>,
+}
+```
+
+## Fields
+
+### no_cache
+
+<ParamField path="no_cache" type="bool" default="false">
+  Disable the local cache entirely. When `true`, rustic will not cache any repository data locally, which may significantly impact performance but reduces disk usage.
+</ParamField>
+
+**Environment variable:** `RUSTIC_NO_CACHE`
+
+### cache_dir
+
+<ParamField path="cache_dir" type="Option<PathBuf>" default="None">
+  Custom cache directory path. If not set, rustic uses the platform's standard cache location. Conflicts with `no_cache`.
+</ParamField>
+
+**Environment variable:** `RUSTIC_CACHE_DIR`
+
+### warm_up
+
+<ParamField path="warm_up" type="bool" default="false">
+  Enable automatic warm-up of data pack files. When `true`, rustic requests pack files without processing them to trigger caching in cloud storage systems or similar.
+</ParamField>
+
+Useful for:
+- Cold storage backends (e.g., AWS S3 Glacier)
+- CDN or cache-based storage systems
+- Improving restore performance
+
+### warm_up_command
+
+<ParamField path="warm_up_command" type="Option<CommandInput>" default="None">
+  External command to execute for warming up pack files. The command string should include `%id` as a placeholder for the pack ID.
+</ParamField>
+
+Conflicts with `warm_up`.
+
+**Example:**
+
+```rust
+use rustic_core::RepositoryOptions;
+
+let opts = RepositoryOptions::default()
+    .warm_up_command("aws s3api restore-object --bucket mybucket --key packs/%id".into());
+```
+
+### warm_up_wait_command
+
+<ParamField path="warm_up_wait_command" type="Option<CommandInput>" default="None">
+  Command to execute and wait for before considering warm-up complete. Also uses `%id` placeholder.
+</ParamField>
+
+### warm_up_wait
+
+<ParamField path="warm_up_wait" type="Option<SignedDuration>" default="None">
+  Duration to wait after warm-up completes. Useful when storage systems need time to move data from cold to hot tier.
+</ParamField>
+
+**Example:**
+
+```rust
+use rustic_core::RepositoryOptions;
+use jiff::SignedDuration;
+
+let opts = RepositoryOptions::default()
+    .warm_up_wait(SignedDuration::from_mins(10));
+```
+
+### warm_up_batch
+
+<ParamField path="warm_up_batch" type="Option<usize>" default="None">
+  Number of pack IDs to batch together when invoking warm-up commands. Higher values reduce the number of command invocations but may exceed command-line length limits.
+</ParamField>
+
+## Builder Methods
+
+Thanks to the `Setters` derive macro, `RepositoryOptions` provides fluent builder methods:
+
+```rust
+pub fn no_cache(self, value: bool) -> Self
+pub fn cache_dir(self, value: impl Into<Option<PathBuf>>) -> Self
+pub fn warm_up(self, value: bool) -> Self
+pub fn warm_up_command(self, value: impl Into<Option<CommandInput>>) -> Self
+pub fn warm_up_wait_command(self, value: impl Into<Option<CommandInput>>) -> Self
+pub fn warm_up_wait(self, value: impl Into<Option<SignedDuration>>) -> Self
+pub fn warm_up_batch(self, value: impl Into<Option<usize>>) -> Self
+```
+
+Each method returns `Self` for method chaining.
+
+## Usage Examples
+
+### Basic Usage
+
+```rust
+use rustic_core::{Repository, RepositoryOptions};
+use rustic_backend::BackendOptions;
+
+let backends = BackendOptions::default()
+    .repository("/tmp/repo")
+    .to_backends()?;
+
+let opts = RepositoryOptions::default();
+let repo = Repository::new(&opts, &backends)?;
+```
+
+### Disable Cache
+
+```rust
+let opts = RepositoryOptions::default()
+    .no_cache(true);
+
+let repo = Repository::new(&opts, &backends)?;
+```
+
+### Custom Cache Directory
+
+```rust
+use std::path::PathBuf;
+
+let opts = RepositoryOptions::default()
+    .cache_dir(PathBuf::from("/custom/cache/path"));
+
+let repo = Repository::new(&opts, &backends)?;
+```
+
+### Enable Warm-Up
+
+```rust
+let opts = RepositoryOptions::default()
+    .warm_up(true);
+
+let repo = Repository::new(&opts, &backends)?;
+```
+
+### Cold Storage Configuration
+
+For AWS S3 Glacier or similar cold storage:
+
+```rust
+use rustic_core::RepositoryOptions;
+use jiff::SignedDuration;
+
+let opts = RepositoryOptions::default()
+    .warm_up_command(
+        "aws s3api restore-object --bucket mybucket --key packs/%id --restore-request Tier=Expedited"
+    )
+    .warm_up_wait(SignedDuration::from_hours(1))
+    .warm_up_batch(10);
+
+let repo = Repository::new(&opts, &backends)?;
+```
+
+### Hot/Cold Repository Setup
+
+```rust
+use rustic_backend::BackendOptions;
+use rustic_core::RepositoryOptions;
+
+// Set up hot and cold backends
+let backends = BackendOptions::default()
+    .repository("/cold/storage/path")  // Cold storage
+    .repo_hot("/hot/cache/path")       // Fast access storage
+    .to_backends()?;
+
+let opts = RepositoryOptions::default();
+let repo = Repository::new(&opts, &backends)?;
+```
+
+### Command-Line Integration
+
+With the `clap` feature enabled, `RepositoryOptions` can be parsed from command-line arguments:
+
+```rust
+use clap::Parser;
+use rustic_core::RepositoryOptions;
+
+#[derive(Parser)]
+struct Cli {
+    #[clap(flatten)]
+    repo_opts: RepositoryOptions,
+}
+
+let cli = Cli::parse();
+let repo = Repository::new(&cli.repo_opts, &backends)?;
+```
+
+Supported flags:
+- `--no-cache` - Disable cache
+- `--cache-dir <PATH>` - Set cache directory
+- `--warm-up` - Enable warm-up
+- `--warm-up-command <CMD>` - Set warm-up command
+- `--warm-up-wait-command <CMD>` - Set warm-up wait command
+- `--warm-up-wait <DURATION>` - Set warm-up wait duration
+- `--warm-up-batch <SIZE>` - Set warm-up batch size
+
+### Configuration File
+
+With the `merge` feature, options can be loaded from configuration files:
+
+```rust
+use rustic_core::RepositoryOptions;
+use serde::Deserialize;
+
+// TOML configuration file:
+// [repository]
+// no-cache = false
+// cache-dir = "/custom/cache"
+// warm-up = true
+// warm-up-batch = 5
+
+let opts: RepositoryOptions = toml::from_str(config_content)?;
+```
+
+## Performance Considerations
+
+### Cache Impact
+
+- **With cache** (default): Faster repeated access, uses local disk space
+- **Without cache** (`no_cache = true`): Slower, no local disk usage
+- **Custom cache**: Useful for controlling cache location (e.g., SSD vs HDD)
+
+### Warm-Up Strategies
+
+**Simple warm-up** (`warm_up = true`):
+```rust
+RepositoryOptions::default().warm_up(true)
+```
+- Requests files without processing
+- Good for CDN/cache systems
+
+**Command-based warm-up**:
+```rust
+RepositoryOptions::default()
+    .warm_up_command("mycommand %id")
+    .warm_up_batch(10)
+```
+- Custom logic per storage system
+- Batch processing reduces overhead
+
+**With wait time**:
+```rust
+RepositoryOptions::default()
+    .warm_up(true)
+    .warm_up_wait(SignedDuration::from_mins(5))
+```
+- Allows storage tier migration
+- Essential for cold storage (Glacier, Archive tier)
+
+## Best Practices
+
+1. **Use defaults for local storage**:
+   ```rust
+   RepositoryOptions::default()
+   ```
+
+2. **Disable cache for single-use operations**:
+   ```rust
+   RepositoryOptions::default().no_cache(true)
+   ```
+
+3. **Configure warm-up for cloud storage**:
+   ```rust
+   RepositoryOptions::default()
+       .warm_up(true)
+       .warm_up_wait(SignedDuration::from_mins(1))
+   ```
+
+4. **Use custom cache for performance tuning**:
+   ```rust
+   RepositoryOptions::default()
+       .cache_dir("/fast/ssd/cache")
+   ```
+
+## See Also
+
+- [Repository](/api/repository) - Main repository type
+- [BackendOptions](https://docs.rs/rustic_backend) - Backend configuration
+- [ConfigFile](/api/repofile#configfile) - Repository-level configuration

@@ -1,0 +1,379 @@
+---
+title: Snapshots
+description: Understanding snapshots and how they preserve your backup history
+---
+
+A **snapshot** represents the state of your backed-up data at a specific point in time. Snapshots are the primary way you interact with your backup history in rustic_core.
+
+## What is a Snapshot?
+
+A snapshot is metadata that describes:
+- **When** the backup was taken
+- **What** was backed up (paths)
+- **Where** it came from (hostname)
+- **How** to find the data (tree ID)
+- **Who** created it (username)
+- **Why** it exists (tags, labels, description)
+
+<Note>
+Snapshots are stored as JSON files in the repository's `snapshots/` directory. Each snapshot is identified by a unique 32-byte ID.
+</Note>
+
+## Snapshot Metadata
+
+The `SnapshotFile` structure contains comprehensive metadata:
+
+```rust
+pub struct SnapshotFile {
+    /// Timestamp of this snapshot
+    pub time: Zoned,
+    
+    /// The tree blob id where contents are stored  
+    pub tree: TreeId,
+    
+    /// The list of paths contained in this snapshot
+    pub paths: StringList,
+    
+    /// The hostname where snapshot was created
+    pub hostname: String,
+    
+    /// Tags for filtering and organization
+    pub tags: StringList,
+    
+    /// Optional label for the snapshot
+    pub label: String,
+    
+    /// Parent snapshot ID for incremental backups
+    pub parent: Option<SnapshotId>,
+    
+    /// Summary statistics from the backup
+    pub summary: Option<SnapshotSummary>,
+    
+    /// Optional description
+    pub description: Option<String>,
+    
+    // ... additional fields
+}
+```
+
+### Core Fields
+
+<AccordionGroup>
+  <Accordion title="Time" icon="clock">
+    The timestamp when the backup was created. This is the primary sorting field for snapshots.
+    
+    ```rust
+    // Snapshots are ordered by time
+    impl Ord for SnapshotFile {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.time.cmp(&other.time)
+        }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Tree" icon="folder-tree">
+    The ID of the root tree blob containing the snapshot's directory structure and file references.
+    This is how you access the actual backup data.
+    
+    ```rust
+    let tree = repo.get_tree(&snapshot.tree)?;
+    ```
+  </Accordion>
+  
+  <Accordion title="Paths" icon="folder-open">
+    List of filesystem paths that were backed up in this snapshot.
+    
+    ```rust
+    snapshot.paths  // StringList(["home/user/docs", "/etc"])
+    ```
+  </Accordion>
+  
+  <Accordion title="Tags" icon="tags">
+    User-defined tags for organizing and filtering snapshots.
+    
+    ```rust
+    let tags = StringList::from_str("important,daily")?;
+    snapshot.add_tags(vec![tags]);
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Snapshot Immutability
+
+<Warning>
+Snapshots are **immutable** once created. You cannot modify an existing snapshot's data or metadata.
+</Warning>
+
+This immutability provides:
+- **Integrity**: Snapshots cannot be corrupted or tampered with
+- **Consistency**: What you backed up is what you'll restore
+- **Audit trail**: Complete history of all backups
+
+If you need to "modify" a snapshot (e.g., add tags), rustic creates a **new snapshot** with the updated metadata:
+
+```rust
+// Modifying creates a new snapshot
+pub fn modify(&mut self, modification: &SnapshotModification) -> RusticResult<bool> {
+    modification.apply_to(self)  // Returns true if changed
+}
+
+// Original snapshot ID stored for reference
+pub original: Option<SnapshotId>,
+```
+
+## Incremental Snapshots
+
+Snapshots support incremental backups through **parent relationships**:
+
+<Steps>
+  <Step title="First Backup">
+    Initial snapshot with no parent backs up all data.
+    
+    ```rust
+    let snapshot = SnapshotFile {
+        parent: None,  // No parent
+        // ...
+    };
+    ```
+  </Step>
+  
+  <Step title="Incremental Backup">
+    Subsequent backups reference the previous snapshot as parent.
+    
+    ```rust
+    let snapshot = SnapshotFile {
+        parent: Some(previous_snapshot_id),
+        // Only changed files are stored
+    };
+    ```
+  </Step>
+  
+  <Step title="Deduplication">
+    Unchanged files reference existing blobs, saving space.
+    
+    rustic_core automatically detects unchanged files by comparing:
+    - File size
+    - Modification time  
+    - Inode (when available)
+  </Step>
+</Steps>
+
+<Tip>
+Each snapshot is self-contained and can be restored independently, even if you delete the parent snapshots!
+</Tip>
+
+## Snapshot Organization
+
+### Finding Snapshots
+
+Multiple ways to identify and retrieve snapshots:
+
+<Tabs>
+  <Tab title="By ID">
+    Use full or partial snapshot ID:
+    
+    ```rust
+    // Full ID
+    let snap = repo.get_snapshot_from_str(
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        |_| true
+    )?;
+    
+    // Partial ID (must be unique)
+    let snap = repo.get_snapshot_from_str("0123456", |_| true)?;
+    ```
+  </Tab>
+  
+  <Tab title="Latest Syntax">
+    Get recent snapshots with `latest` or `latest~N`:
+    
+    ```rust
+    // Most recent snapshot
+    let snap = repo.get_snapshot_from_str("latest", |_| true)?;
+    
+    // Second most recent
+    let snap = repo.get_snapshot_from_str("latest~1", |_| true)?;
+    
+    // Third most recent
+    let snap = repo.get_snapshot_from_str("latest~2", |_| true)?;
+    ```
+  </Tab>
+  
+  <Tab title="Filtering">
+    Filter snapshots by criteria:
+    
+    ```rust
+    let snapshots = repo.get_matching_snapshots(|snap| {
+        snap.hostname == "myserver" && 
+        snap.tags.contains("important")
+    })?;
+    ```
+  </Tab>
+</Tabs>
+
+### Filtering Snapshots
+
+Snapshots can be filtered using custom predicates:
+
+```rust
+// By hostname
+let filter = |snap: &SnapshotFile| snap.hostname == "production";
+let snaps = repo.get_matching_snapshots(filter)?;
+
+// By tags
+let required_tags = vec![StringList::from_str("daily,important")?];
+let filter = |snap: &SnapshotFile| snap.tags.matches(&required_tags);
+
+// By time range
+let cutoff = Zoned::now().checked_sub(30.days())?;
+let filter = |snap: &SnapshotFile| snap.time > cutoff;
+```
+
+## Snapshot Summary
+
+The optional `SnapshotSummary` provides detailed statistics about the backup:
+
+```rust
+pub struct SnapshotSummary {
+    // File statistics
+    pub files_new: u64,
+    pub files_changed: u64,
+    pub files_unmodified: u64,
+    pub total_files_processed: u64,
+    pub total_bytes_processed: u64,
+    
+    // Directory statistics  
+    pub dirs_new: u64,
+    pub dirs_changed: u64,
+    pub dirs_unmodified: u64,
+    
+    // Blob statistics
+    pub data_blobs: u64,
+    pub tree_blobs: u64,
+    pub data_added: u64,              // Uncompressed
+    pub data_added_packed: u64,        // Compressed
+    
+    // Timing
+    pub backup_start: Zoned,
+    pub backup_end: Zoned,
+    pub backup_duration: f64,
+}
+```
+
+<Card title="Example Summary" icon="chart-line">
+  ```json
+  {
+    "total_files_processed": 15234,
+    "files_new": 42,
+    "files_changed": 156,
+    "files_unmodified": 15036,
+    "data_added": 2147483648,
+    "data_added_packed": 536870912,
+    "backup_duration": 45.2
+  }
+  ```
+  
+  This shows good deduplication: 2GB of data compressed to ~512MB.
+</Card>
+
+## Snapshot Lifecycle
+
+### Creating Snapshots
+
+Snapshots are created during backup operations:
+
+```rust
+use rustic_core::{SnapshotOptions, SnapshotFile};
+
+// Configure snapshot metadata
+let snap_opts = SnapshotOptions {
+    label: Some("Daily Backup".to_string()),
+    tags: vec![StringList::from_str("daily,automated")?],
+    description: Some("Automated daily backup".to_string()),
+    ..Default::default()
+};
+
+// Create snapshot from options
+let snapshot = SnapshotFile::from_options(&snap_opts)?;
+```
+
+### Deleting Snapshots
+
+Snapshots can be removed (respecting deletion policies):
+
+```rust
+// Check if snapshot must be kept
+if snapshot.must_keep(&Zoned::now()) {
+    println!("Cannot delete: snapshot has deletion protection");
+} else {
+    repo.delete_snapshots(&[snapshot.id])?;
+}
+```
+
+<Warning>
+Deleting snapshots only removes the metadata. The actual data blobs are removed during **prune** operations.
+</Warning>
+
+## Deletion Policies
+
+Snapshots support deletion policies:
+
+```rust
+pub enum DeleteOption {
+    NotSet,                    // No policy
+    Never,                     // Never delete
+    After(Zoned),             // Delete after this time
+}
+```
+
+Example usage:
+
+```rust
+// Mark as permanent
+let snap_opts = SnapshotOptions {
+    delete_never: true,
+    ..Default::default()
+};
+
+// Auto-delete after 30 days
+let snap_opts = SnapshotOptions {
+    delete_after: Some(Span::new().days(30)),
+    ..Default::default()  
+};
+```
+
+## Multiple Parents
+
+Snapshots can have multiple parents for advanced scenarios:
+
+```rust
+pub struct SnapshotFile {
+    pub parent: Option<SnapshotId>,     // Single parent (legacy)
+    pub parents: Vec<SnapshotId>,       // Multiple parents
+}
+
+// Get all parents
+let parents = snapshot.get_parents();  // Returns &[SnapshotId]
+```
+
+This enables:
+- **Merged snapshots**: Combining multiple backup sources
+- **Migration**: Preserving history when moving repositories
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Repository" icon="database" href="./repository">
+    Learn about repository structure
+  </Card>
+  <Card title="Deduplication" icon="compress" href="./deduplication">
+    How rustic eliminates duplicate data
+  </Card>
+  <Card title="Encryption" icon="lock" href="./encryption">
+    Snapshot security and encryption
+  </Card>
+  <Card title="Backends" icon="server" href="./backends">
+    Where snapshots are stored
+  </Card>
+</CardGroup>
